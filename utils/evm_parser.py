@@ -576,23 +576,20 @@ class EVMLogParser:
         
         return details
 
-    def analyze_dex_swap(self, tx_hash: str) -> Optional[Dict[str, Any]]:
+    def analyze_dex_swap(self, tx_hash: str, receipt: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
         """
         🚀 ENHANCED DEX ANALYSIS: Deep on-chain verification with method signature decoding.
         
-        NEW METHODOLOGY:
-        1. Fetch reliable transaction receipt via Web3.py 
-        2. Check transaction success status
-        3. Decode method signature and event logs
-        4. Apply internal classification rules
-        5. Fallback to heuristic analysis if needed
+        Args:
+            tx_hash: Transaction hash to analyze
+            receipt: Pre-fetched receipt (skip RPC call if provided)
         
         Returns:
             Dict with internal classification, evidence, confidence, and swap details
         """
         try:
-            # STEP 1: Fetch reliable transaction receipt
-            receipt = self.get_transaction_receipt(tx_hash)
+            if receipt is None:
+                receipt = self.get_transaction_receipt(tx_hash)
             
             if not receipt:
                 logger.debug(f"⚠️ Receipt fetch failed for {tx_hash}, falling back to heuristic analysis")

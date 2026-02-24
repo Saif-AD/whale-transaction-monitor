@@ -30,7 +30,7 @@ ADMIN_API_KEY = "dev_key"  # Replace with a secure key in production
 WHALE_ALERT_API_KEY = os.getenv("WHALE_ALERT_API_KEY", "Kj7GlLsRpxoCBz1zZBINUUqBCgDFdHyV")
 
 # Provider API Keys (for professional RPC endpoints)
-ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY", "fo8NbYyCOVp35sUKYle2JS9TdiJcUpes")
+ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY", "DwkUQYC8okkQxComPim-h")
 INFURA_PROJECT_ID = os.getenv("INFURA_PROJECT_ID", "")
 ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY", "G8K3WVHIZWDFRTMQQ39526GGDZWIY5EC8V")  # SONAR key
 
@@ -102,7 +102,7 @@ BITCOIN_NODE_PROVIDER_URI = os.getenv('BITCOIN_NODE_PROVIDER_URI', '')    # Loca
 # PROFESSIONAL MULTI-PROVIDER SETUP (Based on 2024/2025 research)
 
 # Primary providers (highest reliability)
-ALCHEMY_ETHEREUM_RPC = f"https://eth-mainnet.alchemyapi.io/v2/{ALCHEMY_API_KEY}" if ALCHEMY_API_KEY and ALCHEMY_API_KEY != "YourApiKeyToken" else None
+ALCHEMY_ETHEREUM_RPC = f"https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}" if ALCHEMY_API_KEY and ALCHEMY_API_KEY != "YourApiKeyToken" else None
 INFURA_ETHEREUM_RPC = f"https://mainnet.infura.io/v3/{INFURA_PROJECT_ID}" if INFURA_PROJECT_ID and INFURA_PROJECT_ID != "YourProjectId" else None
 
 # Secondary providers (free but reliable)
@@ -138,6 +138,21 @@ POLYGON_RPC_PROVIDERS = [
 ]
 
 POLYGON_RPC_URL = POLYGON_RPC_PROVIDERS[0] if POLYGON_RPC_PROVIDERS else "https://polygon.publicnode.com"
+
+# Alchemy multi-chain RPC endpoints
+ALCHEMY_SOLANA_RPC = f"https://solana-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}" if ALCHEMY_API_KEY and ALCHEMY_API_KEY != "YourApiKeyToken" else None
+ALCHEMY_BITCOIN_RPC = f"https://bitcoin-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}" if ALCHEMY_API_KEY and ALCHEMY_API_KEY != "YourApiKeyToken" else None
+ALCHEMY_TRON_RPC = f"https://tron-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}" if ALCHEMY_API_KEY and ALCHEMY_API_KEY != "YourApiKeyToken" else None
+
+# Solana RPC providers (Alchemy primary, Helius fallback)
+SOLANA_RPC_PROVIDERS = [
+    provider for provider in [
+        ALCHEMY_SOLANA_RPC,
+        f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else None,
+        "https://api.mainnet-beta.solana.com",
+    ] if provider is not None
+]
+SOLANA_PRIMARY_RPC = SOLANA_RPC_PROVIDERS[0] if SOLANA_RPC_PROVIDERS else "https://api.mainnet-beta.solana.com"
 
 # Construct URLs that depend on API keys
 WHALE_WS_URL = f"wss://leviathan.whale-alert.io/ws?api_key={WHALE_ALERT_API_KEY}"

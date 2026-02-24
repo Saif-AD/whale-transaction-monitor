@@ -150,10 +150,14 @@ def on_solana_message(ws, message):
 
 
 def connect_solana_websocket(retry_count=0, max_retries=5):
+    if not HELIUS_API_KEY or len(HELIUS_API_KEY) < 10:
+        safe_print("⚠️  Solana WS: HELIUS_API_KEY missing or invalid.")
+        return None
+
     ws_url = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
-    
+
     def on_open(ws):
-        print("Solana monitoring started...")
+        safe_print("✅ Solana WebSocket connected – subscribing to SPL token transfers...")
         subscribe_msg = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -169,19 +173,21 @@ def connect_solana_websocket(retry_count=0, max_retries=5):
         ws.send(json.dumps(subscribe_msg))
 
     def on_error(ws, error):
-        error_msg = f"Solana connection error: {error}"
-        print(error_msg)
+        error_msg = f"Solana WS error: {type(error).__name__}: {str(error)[:200]}"
+        safe_print(error_msg)
         log_error(error_msg)
 
     def on_close(ws, close_status_code, close_msg):
-        if not shutdown_flag.is_set():  # Only retry if we're not shutting down
+        if not shutdown_flag.is_set():
             nonlocal retry_count
             retry_count += 1
             if retry_count <= max_retries:
                 wait_time = min(30, 2 ** retry_count)
-                safe_print(f"Solana connection closed. Reconnecting... ({retry_count}/{max_retries})")
+                safe_print(f"Solana WS closed (code: {close_status_code}). Reconnecting in {wait_time}s ({retry_count}/{max_retries})...")
                 time.sleep(wait_time)
                 connect_solana_websocket(retry_count, max_retries)
+            else:
+                safe_print(f"Solana WS: max retries ({max_retries}) reached. Giving up.")
 
     ws_app = websocket.WebSocketApp(
         ws_url,
@@ -190,15 +196,27 @@ def connect_solana_websocket(retry_count=0, max_retries=5):
         on_error=on_error,
         on_close=on_close
     )
-    
-    ws_thread = threading.Thread(target=ws_app.run_forever, kwargs={"ping_interval": 60})
-    ws_thread.daemon = True
+
+    ws_thread = threading.Thread(
+        target=ws_app.run_forever,
+        kwargs={"ping_interval": 60},
+        daemon=True
+    )
     ws_thread.start()
-    
     return ws_thread
 
 
 def start_solana_thread():
-    solana_thread = threading.Thread(target=connect_solana_websocket, daemon=True)
-    solana_thread.start()
-    return solana_thread
+    """Start Solana WebSocket monitoring thread."""
+    try:
+        thread = connect_solana_websocket()
+        if thread:
+            thread.name = "Solana-WS"
+            return thread
+        else:
+            safe_print("⚠️  Solana WebSocket monitor could not be started.")
+            return None
+    except Exception as e:
+        safe_print(f"Error starting Solana thread: {e}")
+        traceback.print_exc()
+        return None

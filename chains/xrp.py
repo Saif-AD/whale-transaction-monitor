@@ -109,7 +109,7 @@ def on_xrp_open(ws):
     """Handle XRP websocket connection opening"""
     global connection_attempts
     connection_attempts = 0
-    safe_print("XRP WS connection established.")
+    safe_print("✅ XRP WebSocket connected – subscribing to transactions...")
     try:
         subscribe_msg = json.dumps({
             "id": "xrp_monitor",
@@ -117,7 +117,7 @@ def on_xrp_open(ws):
             "streams": ["transactions"]
         })
         ws.send(subscribe_msg)
-        safe_print("Subscribed to XRP transactions.")
+        safe_print("   Subscribed to XRP transaction stream.")
     except Exception as e:
         safe_print(f"Error subscribing to XRP transactions: {e}")
         traceback.print_exc()
@@ -128,23 +128,28 @@ def on_xrp_error(ws, error):
     # Don't close the connection on most errors, let the websocket library handle reconnection
 
 def on_xrp_close(ws, close_status_code, close_msg):
-    """Handle XRP websocket connection closing"""
+    """Handle XRP websocket connection closing with exponential backoff"""
     global connection_attempts
     connection_attempts += 1
-    
-    safe_print(f"XRP WS closed (code: {close_status_code}). Message: {close_msg}")
-    
-    # Implement exponential backoff
+
+    safe_print(f"XRP WS closed (code: {close_status_code}).")
+
+    if shutdown_flag.is_set():
+        return
+
+    max_attempts = 20
+    if connection_attempts > max_attempts:
+        safe_print(f"XRP WS: max reconnect attempts ({max_attempts}) reached. Giving up.")
+        return
+
     wait_time = min(120, 5 * (2 ** min(connection_attempts, 5)))
-    safe_print(f"Reconnecting in {wait_time} seconds... (attempt {connection_attempts})")
-    
-    if not shutdown_flag.is_set():
-        time.sleep(wait_time)
-        try:
-            connect_xrp_websocket()
-        except Exception as e:
-            safe_print(f"Error reconnecting to XRP: {e}")
-            traceback.print_exc()
+    safe_print(f"XRP WS reconnecting in {wait_time}s (attempt {connection_attempts})...")
+    time.sleep(wait_time)
+    try:
+        connect_xrp_websocket()
+    except Exception as e:
+        safe_print(f"Error reconnecting to XRP: {e}")
+        traceback.print_exc()
 
 def connect_xrp_websocket():
     """Create and configure XRP websocket connection"""

@@ -248,6 +248,16 @@ def print_new_erc20_transfers():
                         "block_number": int(tx["blockNumber"])
                     }
 
+                    # Fetch full receipt from Alchemy for $50k+ transactions
+                    if estimated_usd >= 50_000:
+                        try:
+                            from utils.alchemy_rpc import fetch_evm_receipt
+                            receipt = fetch_evm_receipt(tx_hash, 'ethereum')
+                            if receipt:
+                                event['receipt'] = receipt
+                        except Exception:
+                            pass
+
                     # Process through the universal processor
                     from utils.classification_final import process_and_enrich_transaction
                     

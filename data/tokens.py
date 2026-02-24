@@ -216,7 +216,7 @@ SOL_TOKENS_TO_MONITOR = {
     "PYTH": {"mint": "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3", "decimals": 6, "min_threshold": 1_500},
     "BSOL": {"mint": "bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1", "decimals": 9, "min_threshold": 2_500},
     "WIF": {"mint": "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLZYQJV5sCvpr", "decimals": 6, "min_threshold": 1_000},
-    "RENDER": {"mint": "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R", "decimals": 8, "min_threshold": 1_500},
+    "RENDER": {"mint": "rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4EkHBof", "decimals": 8, "min_threshold": 1_500},
     "MEAN": {"mint": "MEANeD3XDdUmNMsRGjASkSWdC8prLYsoRJ61pPeHctD", "decimals": 6, "min_threshold": 1_000},
     "UXDY": {"mint": "UXD8m9cvwk4RcSxnX2HZ9VudQCEeDH6mQRm2YaTFstq", "decimals": 6, "min_threshold": 2_000},
     "USDR": {"mint": "USDrbBQwQbQ2oWHUPfA8QBHcyVxKUq1xHyXsSLKdUq2", "decimals": 6, "min_threshold": 5_000},
@@ -395,6 +395,12 @@ TOKEN_PRICES.update({
     "USDR": 1.0,
     "SHDW": 0.05,
     "COPE": 0.12
+})
+
+# Native chain tokens (for Bitcoin/Tron monitors)
+TOKEN_PRICES.update({
+    "BTC": 95000,
+    "TRX": 0.25,
 })
 
 STABLE_COINS = {"usdt", "usdc", "dai", "tusd", "busd"}

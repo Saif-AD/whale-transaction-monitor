@@ -264,6 +264,28 @@ def normalize_address(address: str) -> str:
     return address.lower().strip()
 
 
+_BLOCKCHAIN_ALIASES = {
+    'eth': 'ethereum', 'ETH': 'ethereum', 'Ethereum': 'ethereum',
+    'ETHEREUM': 'ethereum', 'mainnet': 'ethereum',
+    'poly': 'polygon', 'matic': 'polygon', 'POLYGON': 'polygon',
+    'Polygon': 'polygon', 'MATIC': 'polygon',
+    'BSC': 'bsc', 'Bsc': 'bsc', 'bnb': 'bsc', 'BNB': 'bsc',
+    'binance-smart-chain': 'bsc', 'binance_smart_chain': 'bsc',
+    'btc': 'bitcoin', 'BTC': 'bitcoin', 'Bitcoin': 'bitcoin',
+    'BITCOIN': 'bitcoin',
+    'sol': 'solana', 'SOL': 'solana', 'Solana': 'solana',
+    'SOLANA': 'solana',
+}
+
+
+def normalize_blockchain(blockchain: str) -> str:
+    """Normalize blockchain name to canonical lowercase form used in Supabase."""
+    if not blockchain:
+        return 'ethereum'
+    cleaned = blockchain.strip()
+    return _BLOCKCHAIN_ALIASES.get(cleaned, cleaned.lower())
+
+
 def create_empty_phase_result(reason: str, phase_name: str = "unknown") -> PhaseResult:
     """Create standardized empty phase result."""
     return PhaseResult(
@@ -319,16 +341,9 @@ class CEXClassificationEngine(BaseAnalysisEngine):
         - Tier 1 CEX → User = BUY (confidence: 0.95)
         - User + Whale → CEX = Major sell pressure (confidence boost: +0.10)
         - CEX → User + Whale = Major accumulation (confidence boost: +0.10)
-        
-        Args:
-            from_addr: Transaction sender address
-            to_addr: Transaction receiver address
-            blockchain: Blockchain network
-            
-        Returns:
-            PhaseResult with institutional-grade classification
         """
         try:
+            blockchain = normalize_blockchain(blockchain)
             self.logger.debug(f"🏛️ Executing institutional CEX analysis: {from_addr} -> {to_addr}")
             
             # Normalize addresses with validation
@@ -710,12 +725,10 @@ class CEXClassificationEngine(BaseAnalysisEngine):
         """
         🏛️ INSTITUTIONAL CEX CLASSIFICATION ENGINE
         
-        Professional multi-factor CEX detection with institutional tier scoring:
-        - Tier 1: Major institutional exchanges (Coinbase, Binance, Kraken) - 0.95 confidence
-        - Tier 2: Regional major exchanges (OKX, KuCoin, Huobi) - 0.90 confidence  
-        - Tier 3: Smaller verified exchanges - 0.80 confidence
-        - OTC Desks: Professional trading desks - 0.85 confidence
-        - Market Makers: Institutional liquidity providers - 0.80 confidence
+        Professional multi-factor CEX detection with institutional tier scoring.
+        Uses a combined search across entity_name AND label to identify exchanges,
+        which handles BigQuery-discovered addresses that have entity_name=null but
+        informative labels.
         """
         address_type = (address_data.get('address_type') or '').lower()
         label = (address_data.get('label') or '').lower()
@@ -723,8 +736,8 @@ class CEXClassificationEngine(BaseAnalysisEngine):
         analysis_tags = address_data.get('analysis_tags') or {}
         signal_potential = (address_data.get('signal_potential') or '').lower()
         balance_usd = float(address_data.get('balance_usd', 0) or 0)
+        source = (address_data.get('source') or '').lower()
         
-        # 🏛️ INSTITUTIONAL EXCHANGE TIER CLASSIFICATION
         tier_1_exchanges = [
             'coinbase', 'binance', 'kraken', 'gemini', 'bitstamp', 'bitfinex'
         ]
@@ -745,93 +758,106 @@ class CEXClassificationEngine(BaseAnalysisEngine):
         confidence_score = 0.0
         exchange_tier = 'unknown'
         is_cex = False
+        resolved_name = ''
         
-        # 🎯 PRIMARY DETECTION: Entity name analysis
-        entity_lower = entity_name.lower()
+        searchable_text = f"{entity_name} {label}".lower()
+        
         for tier1 in tier_1_exchanges:
-            if tier1 in entity_lower:
+            if tier1 in searchable_text:
                 is_cex = True
                 exchange_tier = 'tier_1'
                 confidence_score = 0.95
-                evidence.append(f"Tier 1 institutional exchange: {entity_name}")
+                resolved_name = tier1.title()
+                evidence.append(f"Tier 1 institutional exchange: {resolved_name}")
                 break
         
         if not is_cex:
             for tier2 in tier_2_exchanges:
-                if tier2 in entity_lower:
+                if tier2 in searchable_text:
                     is_cex = True
                     exchange_tier = 'tier_2'
                     confidence_score = 0.90
-                    evidence.append(f"Tier 2 major exchange: {entity_name}")
+                    resolved_name = tier2.title()
+                    evidence.append(f"Tier 2 major exchange: {resolved_name}")
                     break
         
         if not is_cex:
             for tier3 in tier_3_exchanges:
-                if tier3 in entity_lower:
+                if tier3 in searchable_text:
                     is_cex = True
                     exchange_tier = 'tier_3'
                     confidence_score = 0.80
-                    evidence.append(f"Tier 3 verified exchange: {entity_name}")
+                    resolved_name = tier3.title()
+                    evidence.append(f"Tier 3 verified exchange: {resolved_name}")
                     break
         
-        # 🏦 INSTITUTIONAL SERVICES DETECTION
         if not is_cex:
             for otc in otc_desks:
-                if otc in entity_lower or otc in label:
+                if otc in searchable_text:
                     is_cex = True
                     exchange_tier = 'otc_desk'
                     confidence_score = 0.85
-                    evidence.append(f"Institutional OTC desk: {entity_name}")
+                    resolved_name = otc.title()
+                    evidence.append(f"Institutional OTC desk: {resolved_name}")
                     break
         
         if not is_cex:
             for mm in market_makers:
-                if mm in entity_lower or mm in label:
+                if mm in searchable_text:
                     is_cex = True
                     exchange_tier = 'market_maker'
                     confidence_score = 0.80
-                    evidence.append(f"Institutional market maker: {entity_name}")
+                    resolved_name = mm.title()
+                    evidence.append(f"Institutional market maker: {resolved_name}")
                     break
         
-        # 🔍 SECONDARY DETECTION: Pattern analysis
+        # Explicit address_type='CEX' from Supabase is a strong signal even without
+        # a name match — the address was classified as CEX by BigQuery volume analysis
+        # or Etherscan label scraping.
+        if not is_cex and address_type == 'cex':
+            is_cex = True
+            exchange_tier = 'db_verified_cex'
+            confidence_score = 0.88
+            resolved_name = entity_name.title() if entity_name else 'Verified Exchange'
+            evidence.append(f"Database-verified CEX (address_type=CEX, source: {source or 'supabase'})")
+        
+        dex_exclusions = ['uniswap', 'sushiswap', 'curve', 'balancer', 'dex', 'defi']
         if not is_cex:
-            cex_patterns = ['exchange', 'cex', 'centralized', 'trading', 'spot']
-            dex_exclusions = ['uniswap', 'sushiswap', 'curve', 'balancer', 'dex', 'defi']
+            cex_patterns = ['exchange', 'centralized', 'trading', 'spot']
             
-            # Check address_type
             if any(pattern in address_type for pattern in cex_patterns):
                 if not any(exclusion in address_type for exclusion in dex_exclusions):
                     is_cex = True
-                    exchange_tier = 'verified_cex'
-                    confidence_score = 0.75
+                    exchange_tier = 'pattern_cex'
+                    confidence_score = 0.78
+                    resolved_name = entity_name.title() if entity_name else 'Exchange'
                     evidence.append(f"CEX pattern in address_type: {address_type}")
             
-            # Check label patterns
             if not is_cex and any(pattern in label for pattern in cex_patterns):
                 if not any(exclusion in label for exclusion in dex_exclusions):
                     is_cex = True
                     exchange_tier = 'labeled_cex'
-                    confidence_score = 0.70
+                    confidence_score = 0.75
+                    resolved_name = entity_name.title() if entity_name else 'Exchange'
                     evidence.append(f"CEX pattern in label: {label}")
         
-        # 🏛️ DeFiLlama verification boost
         if isinstance(analysis_tags, dict):
             defillama_category = analysis_tags.get('defillama_category', '').lower()
             if 'cex' in defillama_category or 'exchange' in defillama_category:
                 if is_cex:
-                    confidence_score = min(0.98, confidence_score + 0.10)  # DeFiLlama verification boost
+                    confidence_score = min(0.98, confidence_score + 0.10)
                 else:
                     is_cex = True
                     exchange_tier = 'defillama_verified'
                     confidence_score = 0.85
+                    resolved_name = entity_name.title() if entity_name else 'DeFiLlama Exchange'
                 evidence.append(f"DeFiLlama verified CEX: {defillama_category}")
         
-        # 💰 BALANCE-BASED CONFIDENCE BOOST
         if is_cex and balance_usd:
-            if balance_usd >= 100_000_000:  # $100M+
+            if balance_usd >= 100_000_000:
                 confidence_score = min(0.99, confidence_score + 0.05)
                 evidence.append(f"Mega-scale CEX balance: ${balance_usd:,.0f}")
-            elif balance_usd >= 10_000_000:  # $10M+
+            elif balance_usd >= 10_000_000:
                 confidence_score = min(0.97, confidence_score + 0.03)
                 evidence.append(f"Large-scale CEX balance: ${balance_usd:,.0f}")
         
@@ -840,7 +866,7 @@ class CEXClassificationEngine(BaseAnalysisEngine):
             'exchange_tier': exchange_tier,
             'confidence_score': confidence_score,
             'evidence': evidence,
-            'entity_name': entity_name or label or 'Unknown CEX',
+            'entity_name': resolved_name or entity_name or label or 'Unknown CEX',
             'balance_usd': balance_usd
         }
 
@@ -1349,6 +1375,7 @@ class DEXProtocolEngine(BaseAnalysisEngine):
             PhaseResult with institutional-grade DeFi classification
         """
         try:
+            blockchain = normalize_blockchain(blockchain)
             self.logger.debug(f"🏛️ Executing institutional DeFi analysis: {from_addr} -> {to_addr}")
             
             from_addr_norm = normalize_address(from_addr)
@@ -1752,49 +1779,32 @@ class DEXProtocolEngine(BaseAnalysisEngine):
                 # Fall back to base classification if override disabled
                 return ClassificationType.TRANSFER, f"Bridge interaction via {protocol_interactions[0][1].get('entity_name', '')}"
         
-        # LIQUID STAKING LOGIC: Investment behavior analysis
+        # LIQUID STAKING LOGIC: Not directional — capital is locked/unlocked
         elif protocol_interactions[0][1].get('protocol_type', '') in ["LIQUID_STAKING", "STAKING"]:
-            staking_mapping = DEFI_PROTOCOL_SETTINGS.get('staking_classification_mapping', 'BUY')
             if protocol_interactions[0][0] == 'from':
-                if staking_mapping == 'BUY':
-                    return ClassificationType.BUY, f"User is staking via {protocol_interactions[0][1].get('entity_name', '')} Protocol"
-                else:
-                    return ClassificationType.STAKING, f"User is staking via {protocol_interactions[0][1].get('entity_name', '')} Protocol"
+                return ClassificationType.DEFI, f"User is staking via {protocol_interactions[0][1].get('entity_name', '')} Protocol"
             else:
-                # Unstaking is generally considered selling regardless of settings
-                return ClassificationType.SELL, f"User is unstaking from {protocol_interactions[0][1].get('entity_name', '')}"
+                return ClassificationType.DEFI, f"User is unstaking from {protocol_interactions[0][1].get('entity_name', '')}"
         
-        # LENDING LOGIC: Capital deployment analysis  
+        # LENDING LOGIC: Capital deployment, not directional
         elif protocol_interactions[0][1].get('protocol_type', '') in ["LENDING", "YIELD_FARMING"]:
-            deposit_mapping = DEFI_PROTOCOL_SETTINGS.get('lending_deposit_mapping', 'BUY')
-            withdraw_mapping = DEFI_PROTOCOL_SETTINGS.get('lending_withdraw_mapping', 'SELL')
-            
             if protocol_interactions[0][0] == 'from':
-                if deposit_mapping == 'BUY':
-                    return ClassificationType.BUY, f"User is supplying to {protocol_interactions[0][1].get('entity_name', '')} lending pool"
-                else:
-                    return ClassificationType.DEFI, f"User is supplying to {protocol_interactions[0][1].get('entity_name', '')} lending pool"
+                return ClassificationType.DEFI, f"User is supplying to {protocol_interactions[0][1].get('entity_name', '')} lending pool"
             else:
-                if withdraw_mapping == 'SELL':
-                    return ClassificationType.SELL, f"User is withdrawing from {protocol_interactions[0][1].get('entity_name', '')} lending pool"
-                else:
-                    return ClassificationType.DEFI, f"User is withdrawing from {protocol_interactions[0][1].get('entity_name', '')} lending pool"
+                return ClassificationType.DEFI, f"User is withdrawing from {protocol_interactions[0][1].get('entity_name', '')} lending pool"
         
         # DEX LOGIC: Trading direction analysis (FIXED - don't assume from transaction direction)
         elif protocol_interactions[0][1].get('protocol_type', '') in ["DEX", "UNISWAP", "CURVE", "BALANCER", "PANCAKESWAP", "SUSHISWAP"]:
             # Both buying and selling typically go User→DEX, so transaction direction doesn't determine trade direction
             return ClassificationType.TRANSFER, f"User trading via {protocol_interactions[0][1].get('entity_name', '')} DEX (direction requires blockchain analysis)"
         
-        # DERIVATIVES LOGIC: Trading activity
+        # DERIVATIVES LOGIC: Trading activity — direction unclear without token flow
         elif protocol_interactions[0][1].get('protocol_type', '') in ["DERIVATIVES", "OPTIONS", "SYNTHETICS"]:
-            return ClassificationType.BUY, f"User trading derivatives via {protocol_interactions[0][1].get('entity_name', '')}"
+            return ClassificationType.DEFI, f"User trading derivatives via {protocol_interactions[0][1].get('entity_name', '')}"
         
-        # GENERIC DEFI: Use base classification with enhanced directional intelligence
+        # GENERIC DEFI: Protocol type is context, never determines buy/sell
         else:
-            if protocol_interactions[0][0] == 'from':
-                return ClassificationType.BUY, f"User deploying capital to {protocol_interactions[0][1].get('entity_name', '')}"
-            else:
-                return ClassificationType.BUY, f"User receiving assets from {protocol_interactions[0][1].get('entity_name', '')}"
+            return ClassificationType.DEFI, f"User interacting with {protocol_interactions[0][1].get('entity_name', '')} protocol"
 
     def _extract_protocol_metadata(self, analysis_tags: Dict, entity_name: str) -> Dict[str, Any]:
         """Extract additional protocol metadata from analysis_tags."""
@@ -1841,19 +1851,19 @@ class DEXProtocolEngine(BaseAnalysisEngine):
                     evidence.append(f"DeFiLlama DEX: {defillama_category} (direction requires analysis)")
                     
                 elif any(term in defillama_category for term in ['liquid staking', 'staking']):
-                    classification = ClassificationType.BUY  # Staking = investment behavior
+                    classification = ClassificationType.DEFI
                     protocol_type = "LIQUID_STAKING"
                     confidence_boost += 0.28
                     evidence.append(f"Liquid staking protocol: {defillama_category}")
                     
                 elif 'lending' in defillama_category:
-                    classification = ClassificationType.BUY  # Lending = capital deployment
+                    classification = ClassificationType.DEFI
                     protocol_type = "LENDING"
                     confidence_boost += 0.26
                     evidence.append(f"DeFi lending: {defillama_category}")
                     
                 elif 'yield' in defillama_category or 'farming' in defillama_category:
-                    classification = ClassificationType.BUY  # Yield farming = investment
+                    classification = ClassificationType.DEFI
                     protocol_type = "YIELD_FARMING"
                     confidence_boost += 0.25
                     evidence.append(f"Yield protocol: {defillama_category}")
@@ -1865,13 +1875,13 @@ class DEXProtocolEngine(BaseAnalysisEngine):
                     evidence.append(f"Cross-chain bridge: {defillama_category}")
                     
                 elif any(term in defillama_category for term in ['derivatives', 'options', 'futures']):
-                    classification = ClassificationType.BUY  # Derivatives = trading activity
+                    classification = ClassificationType.DEFI
                     protocol_type = "DERIVATIVES"
                     confidence_boost += 0.24
                     evidence.append(f"DeFi derivatives: {defillama_category}")
                     
                 elif 'synthetics' in defillama_category:
-                    classification = ClassificationType.BUY  # Synthetics = trading
+                    classification = ClassificationType.DEFI
                     protocol_type = "SYNTHETICS"
                     confidence_boost += 0.23
                     evidence.append(f"Synthetic assets: {defillama_category}")
@@ -1879,13 +1889,13 @@ class DEXProtocolEngine(BaseAnalysisEngine):
             # Slug-based detection for specific protocols
             if defillama_slug and confidence_boost == 0.0:  # Fallback if category didn't match
                 protocol_mappings = {
-                    'uniswap': (ClassificationType.BUY, 0.32, "UNISWAP", "Uniswap DEX"),
-                    'curve': (ClassificationType.BUY, 0.30, "CURVE", "Curve Finance"),
-                    'aave': (ClassificationType.BUY, 0.28, "AAVE", "Aave lending"),
-                    'compound': (ClassificationType.BUY, 0.28, "COMPOUND", "Compound lending"),
-                    'balancer': (ClassificationType.BUY, 0.27, "BALANCER", "Balancer DEX"),
-                    'pancakeswap': (ClassificationType.BUY, 0.29, "PANCAKESWAP", "PancakeSwap DEX"),
-                    'sushiswap': (ClassificationType.BUY, 0.29, "SUSHISWAP", "SushiSwap DEX")
+                    'uniswap': (ClassificationType.TRANSFER, 0.32, "UNISWAP", "Uniswap DEX"),
+                    'curve': (ClassificationType.TRANSFER, 0.30, "CURVE", "Curve Finance"),
+                    'aave': (ClassificationType.DEFI, 0.28, "AAVE", "Aave lending"),
+                    'compound': (ClassificationType.DEFI, 0.28, "COMPOUND", "Compound lending"),
+                    'balancer': (ClassificationType.TRANSFER, 0.27, "BALANCER", "Balancer DEX"),
+                    'pancakeswap': (ClassificationType.TRANSFER, 0.29, "PANCAKESWAP", "PancakeSwap DEX"),
+                    'sushiswap': (ClassificationType.TRANSFER, 0.29, "SUSHISWAP", "SushiSwap DEX")
                 }
                 
                 for slug_key, (cls, conf, ptype, desc) in protocol_mappings.items():
@@ -1900,29 +1910,29 @@ class DEXProtocolEngine(BaseAnalysisEngine):
         if entity_name and confidence_boost == 0.0:  # Secondary source
             entity_lower = entity_name.lower()
             if any(term in entity_lower for term in ['uniswap', 'dex', 'swap']):
-                classification = ClassificationType.BUY
+                classification = ClassificationType.TRANSFER
                 protocol_type = "DEX"
                 confidence_boost += 0.25
                 evidence.append(f"DEX entity: {entity_name}")
             elif any(term in entity_lower for term in ['aave', 'compound', 'lending']):
-                classification = ClassificationType.BUY
+                classification = ClassificationType.DEFI
                 protocol_type = "LENDING"
                 confidence_boost += 0.23
                 evidence.append(f"Lending entity: {entity_name}")
         
         # 3. ADDRESS TYPE DETECTION
-        if address_type and confidence_boost == 0.0:  # Tertiary source
+        if address_type and confidence_boost == 0.0:
             if any(term in address_type for term in ['dex', 'defi', 'protocol']):
-                classification = ClassificationType.BUY
+                classification = ClassificationType.DEFI
                 protocol_type = "DEFI_PROTOCOL"
                 confidence_boost += 0.20
                 evidence.append(f"DeFi address type: {address_type}")
         
         # 4. LABEL PATTERN ANALYSIS
-        if label and confidence_boost == 0.0:  # Fallback source
+        if label and confidence_boost == 0.0:
             label_lower = label.lower()
             if any(term in label_lower for term in ['router', 'pool', 'vault', 'staking']):
-                classification = ClassificationType.BUY
+                classification = ClassificationType.DEFI
                 protocol_type = "DEFI_GENERAL"
                 confidence_boost += 0.18
                 evidence.append(f"DeFi label pattern: {label}")
@@ -2718,7 +2728,8 @@ class WhaleIntelligenceEngine:
             
             # Phase 1: Blockchain Specific Analysis (Foundation)
             tx_logger.debug("Phase 1: Blockchain Specific Analysis")
-            phase1_result = self._analyze_blockchain_specific(tx_hash, blockchain)
+            pre_fetched_receipt = transaction.get('receipt')
+            phase1_result = self._analyze_blockchain_specific(tx_hash, blockchain, receipt=pre_fetched_receipt)
             result.phase_results[AnalysisPhase.BLOCKCHAIN_SPECIFIC.value] = phase1_result
             result.whale_signals.extend(phase1_result.whale_signals)
             
@@ -2869,7 +2880,7 @@ class WhaleIntelligenceEngine:
         """Extract and validate core transaction data."""
         try:
             tx_hash = transaction.get('hash', transaction.get('transaction_hash', ''))
-            blockchain = transaction.get('blockchain', 'ethereum').lower()
+            blockchain = normalize_blockchain(transaction.get('blockchain', 'ethereum'))
             from_addr = normalize_address(transaction.get('from', transaction.get('from_address', '')))
             to_addr = normalize_address(transaction.get('to', transaction.get('to_address', '')))
             
@@ -2928,11 +2939,8 @@ class WhaleIntelligenceEngine:
         reasoning_suffix = ""
         
         if final_classification == ClassificationType.STAKING:
-            final_classification = ClassificationType.BUY
-            reasoning_suffix = " (STAKING mapped to BUY - investment behavior)"
-        elif final_classification == ClassificationType.DEFI:
-            final_classification = ClassificationType.BUY
-            reasoning_suffix = " (DEFI mapped to BUY - protocol interaction)"
+            final_classification = ClassificationType.DEFI
+            reasoning_suffix = " (STAKING mapped to DEFI)"
         
         # Check if this should be a moderate confidence classification
         if (final_classification in [ClassificationType.BUY, ClassificationType.SELL] and 
@@ -2955,11 +2963,11 @@ class WhaleIntelligenceEngine:
         """Get maximum confidence from all phase results."""
         return max([result.confidence for result in phase_results.values()], default=0.0)
     
-    def _analyze_blockchain_specific(self, tx_hash: str, blockchain: str) -> PhaseResult:
+    def _analyze_blockchain_specific(self, tx_hash: str, blockchain: str, receipt=None) -> PhaseResult:
         """Analyze blockchain-specific transaction patterns."""
         try:
             if blockchain in ['ethereum', 'polygon'] and blockchain in self.evm_parsers:
-                return self._analyze_evm_transaction(tx_hash, blockchain)
+                return self._analyze_evm_transaction(tx_hash, blockchain, receipt=receipt)
             elif blockchain == 'solana' and self.solana_parser:
                 return self._analyze_solana_transaction(tx_hash)
             else:
@@ -2975,7 +2983,7 @@ class WhaleIntelligenceEngine:
                 AnalysisPhase.BLOCKCHAIN_SPECIFIC.value
             )
     
-    def _analyze_evm_transaction(self, tx_hash: str, blockchain: str) -> PhaseResult:
+    def _analyze_evm_transaction(self, tx_hash: str, blockchain: str, receipt=None) -> PhaseResult:
         """Analyze EVM-based transaction with robust fallback handling."""
         try:
             parser = self.evm_parsers.get(blockchain)
@@ -2985,8 +2993,7 @@ class WhaleIntelligenceEngine:
                     AnalysisPhase.BLOCKCHAIN_SPECIFIC.value
                 )
             
-            # Parse transaction logs and data (now has internal resilience)
-            parse_result = parser.analyze_dex_swap(tx_hash)
+            parse_result = parser.analyze_dex_swap(tx_hash, receipt=receipt)
             
             if not parse_result:
                 return create_empty_phase_result(
@@ -3015,7 +3022,13 @@ class WhaleIntelligenceEngine:
             if analysis_method != 'unknown':
                 evidence.append(f"Blockchain analysis method: {analysis_method}")
             
-            self.logger.info(f"✅ Blockchain analysis complete for {tx_hash}: {classification.value} (confidence: {confidence:.2f}, method: {analysis_method})")
+            # Flag verified swap results so the master classifier gives them top priority
+            is_verified_swap = classification_str.upper() in ['VERIFIED_SWAP_BUY', 'VERIFIED_SWAP_SELL', 'BUY', 'SELL']
+            if is_verified_swap and confidence >= 0.70:
+                parse_result['verified_swap'] = True
+                parse_result['swap_direction'] = classification.value
+            
+            self.logger.info(f"✅ Blockchain analysis complete for {tx_hash}: {classification.value} (confidence: {confidence:.2f}, method: {analysis_method}, verified_swap: {is_verified_swap})")
             
             result = PhaseResult(
                 classification=classification,
@@ -3783,12 +3796,6 @@ class WhaleIntelligenceEngine:
         - Smart aggregation that doesn't just take max confidence
         """
         try:
-            # Priority-based classification with enhanced thresholds
-            priority_phases = [
-                AnalysisPhase.CEX_CLASSIFICATION.value,
-                AnalysisPhase.DEX_PROTOCOL.value
-            ]
-            
             # Extract USD value for weighting
             usd_value = 0
             for phase_result in phase_results.values():
@@ -3799,6 +3806,20 @@ class WhaleIntelligenceEngine:
             usd_boost = 0
             if usd_value >= CLASSIFICATION_THRESHOLDS['usd_value_boost_threshold']:
                 usd_boost = CLASSIFICATION_THRESHOLDS['usd_value_boost_amount']
+            
+            # HIGHEST PRIORITY: Verified swap results from token flow analysis
+            # These are based on actual decoded swap events and stablecoin direction
+            for phase_name, result in phase_results.items():
+                if (hasattr(result, 'raw_data') and result.raw_data 
+                    and result.raw_data.get('verified_swap')
+                    and result.classification in [ClassificationType.BUY, ClassificationType.SELL]):
+                    return result.classification, max(result.confidence, 0.88), f"Verified token flow: {phase_name}"
+            
+            # Priority-based classification with enhanced thresholds
+            priority_phases = [
+                AnalysisPhase.CEX_CLASSIFICATION.value,
+                AnalysisPhase.DEX_PROTOCOL.value
+            ]
             
             # Check priority phases first with reduced thresholds
             for phase_name in priority_phases:
@@ -3871,8 +3892,7 @@ class WhaleIntelligenceEngine:
             elif result.classification in [ClassificationType.SELL, ClassificationType.MODERATE_SELL]:
                 sell_signals.append((adjusted_confidence, weight))
             elif result.classification in [ClassificationType.STAKING, ClassificationType.DEFI]:
-                # Map STAKING and DEFI to BUY
-                buy_signals.append((adjusted_confidence, weight))
+                pass  # DEFI/STAKING are neutral — don't count as buy or sell signals
         
         # Advanced confidence stacking calculation
         buy_confidence = self._calculate_stacked_confidence(buy_signals)

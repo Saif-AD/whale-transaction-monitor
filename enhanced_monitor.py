@@ -29,7 +29,7 @@ from colorama import Fore, Style
 
 # Production logging imports
 from config.logging_config import production_logger, get_transaction_logger
-from utils.classification_final import WhaleIntelligenceEngine, ClassificationType
+from utils.classification_final import WhaleIntelligenceEngine, ClassificationType, normalize_blockchain
 
 # Use the production logger throughout this module (including simulation path)
 logger = production_logger
@@ -292,49 +292,49 @@ def classify_from_whale_perspective(
     original_classification: str
 ) -> str:
     """
-    Determine BUY/SELL/TRANSFER/DEFI from the whale's perspective by following token flow.
+    Adjust classification from the whale's perspective.
 
-    Args:
-        whale_address: Determined whale address (post perspective logic)
-        from_address: Transaction sender
-        to_address: Transaction recipient
-        counterparty_type: Counterparty classification (CEX/DEX/EOA/etc)
-        original_classification: Classification suggested by upstream analysis
-
-    Returns:
-        str: Adjusted classification
+    For CEX: address direction is meaningful (CEX→User=BUY, User→CEX=SELL).
+    For DEX: trust the upstream 7-phase engine (it has token flow analysis).
+    For EOA: trust upstream if directional, otherwise TRANSFER.
+    Never override a confident BUY/SELL from the engine with TRANSFER.
     """
     whale_addr = (whale_address or '').lower()
     from_addr = (from_address or '').lower()
     to_addr = (to_address or '').lower()
     counterparty = (counterparty_type or '').upper()
-    trade = counterparty in TRADE_COUNTERPARTY_TYPES
 
-    # If we cannot determine whale address, fall back to original classification
     if not whale_addr:
         return original_classification
 
-    if whale_addr == to_addr:
-        # Whale receives tokens
-        return 'BUY' if trade else 'TRANSFER'
+    # CEX: address direction IS the signal
+    if counterparty == 'CEX':
+        if whale_addr == to_addr:
+            return 'BUY'
+        elif whale_addr == from_addr:
+            return 'SELL'
+        return original_classification
 
-    if whale_addr == from_addr:
-        # Whale sends tokens
-        return 'SELL' if trade else 'TRANSFER'
+    # DEX: trust upstream token flow analysis; fall back to address direction
+    # only when the engine couldn't determine direction
+    if counterparty == 'DEX':
+        if original_classification in ('BUY', 'SELL'):
+            return original_classification
+        if whale_addr == to_addr:
+            return 'BUY'
+        elif whale_addr == from_addr:
+            return 'SELL'
+        return 'DEFI'
 
-    # If whale is neither sender nor receiver, treat as DEFI/UNKNOWN interaction
+    # DEFI passthrough
     if original_classification == 'DEFI':
         return 'DEFI'
 
-    if trade:
-        # Unknown mapping but involves trade venue: prefer original classification
-        return original_classification if original_classification in {'BUY', 'SELL'} else 'DEFI'
+    # EOA / unknown: trust upstream if directional
+    if original_classification in ('BUY', 'SELL'):
+        return original_classification
 
-    # Non-trade interaction defaults to TRANSFER unless explicitly DEFI
-    if original_classification == 'TRANSFER':
-        return 'TRANSFER'
-
-    return 'DEFI'
+    return 'TRANSFER'
 
 
 def check_near_duplicate(whale_addr: str, token_symbol: str, usd_value: float,
@@ -740,10 +740,13 @@ except ImportError as e:
 # Initialize Production Whale Intelligence Engine
 whale_engine = WhaleIntelligenceEngine()
 
-# Import the new classification system
-from address_enrichment import AddressEnrichmentService, EnrichedAddress, ChainType
-from rule_engine import RuleEngine, Transaction, AddressMetadata, ClassificationType
-from transaction_classifier import TransactionClassifier
+# Import the classification system (optional — only used by simulation path)
+try:
+    from address_enrichment import AddressEnrichmentService, EnrichedAddress, ChainType
+    from rule_engine import RuleEngine, Transaction, AddressMetadata, ClassificationType as RuleClassificationType
+    from transaction_classifier import TransactionClassifier
+except ImportError:
+    TransactionClassifier = None
 
 # Basic colors
 GREEN = '\033[92m'
@@ -1033,37 +1036,52 @@ class TransactionStorage:
             dict with whale_address, counterparty_address, counterparty_type, is_cex_transaction
         """
         try:
-            # Query address types from Supabase
+            blockchain = normalize_blockchain(blockchain)
+            
             from_data = None
             to_data = None
             
-            if from_addr and self.supabase:
+            # Single batch query for both addresses
+            addresses_to_check = [a.lower() for a in [from_addr, to_addr] if a]
+            if addresses_to_check and self.supabase:
                 result = self.supabase.table('addresses')\
                     .select('address, address_type, label, entity_name')\
-                    .eq('address', from_addr.lower())\
+                    .in_('address', addresses_to_check)\
                     .eq('blockchain', blockchain)\
                     .execute()
-                from_data = result.data[0] if result.data else None
+                for row in (result.data or []):
+                    addr = row.get('address', '').lower()
+                    if addr == from_addr.lower():
+                        from_data = row
+                    elif addr == to_addr.lower():
+                        to_data = row
             
-            if to_addr and self.supabase:
-                result = self.supabase.table('addresses')\
-                    .select('address, address_type, label, entity_name')\
-                    .eq('address', to_addr.lower())\
-                    .eq('blockchain', blockchain)\
-                    .execute()
-                to_data = result.data[0] if result.data else None
-            
-            # Determine address types
             from_type = from_data.get('address_type', '') if from_data else ''
             to_type = to_data.get('address_type', '') if to_data else ''
             from_label = from_data.get('label', '') if from_data else ''
             to_label = to_data.get('label', '') if to_data else ''
+            from_entity = from_data.get('entity_name', '') if from_data else ''
+            to_entity = to_data.get('entity_name', '') if to_data else ''
             
-            # Check if addresses are CEX or DEX
-            from_is_cex = from_type in ['CEX Wallet', 'exchange', 'Exchange Wallet'] or 'binance' in from_label.lower() or 'coinbase' in from_label.lower()
-            to_is_cex = to_type in ['CEX Wallet', 'exchange', 'Exchange Wallet'] or 'binance' in to_label.lower() or 'coinbase' in to_label.lower()
+            def _is_cex(addr_type, label, entity_name):
+                """Check if address is a CEX using type, label, and entity_name."""
+                cex_types = {'CEX', 'CEX Wallet', 'exchange', 'Exchange Wallet'}
+                if addr_type in cex_types:
+                    return True
+                searchable = f"{label} {entity_name}".lower()
+                cex_names = ['binance', 'coinbase', 'kraken', 'okx', 'gate.io',
+                             'kucoin', 'huobi', 'crypto.com', 'bybit', 'gemini',
+                             'bitstamp', 'bitfinex', 'bittrex', 'poloniex', 'mexc']
+                return any(name in searchable for name in cex_names)
+            
+            from_is_cex = _is_cex(from_type, from_label, from_entity)
+            to_is_cex = _is_cex(to_type, to_label, to_entity)
             from_is_dex = from_type in ['DEX', 'dex_router', 'DEX Router'] or from_addr.lower() in DEX_ADDRESSES
             to_is_dex = to_type in ['DEX', 'dex_router', 'DEX Router'] or to_addr.lower() in DEX_ADDRESSES
+            
+            # Check if address is a known whale from BigQuery analysis
+            from_is_whale = from_type == 'WHALE'
+            to_is_whale = to_type == 'WHALE'
             
             # Determine whale and counterparty
             whale_address = None
@@ -1576,11 +1594,23 @@ def process_whale_alert_transaction(whale_data: dict) -> bool:
             'symbol': whale_data.get('symbol', ''),
             'amount': whale_data.get('amount', 0),
             'timestamp': whale_data.get('timestamp', time.time()),
-            'gas_price': 0,  # Whale Alert doesn't provide gas price
+            'gas_price': 0,
             'source': 'whale_alert'
         }
         
-        # Task 7: Pass through full MasterClassifier.analyze_transaction pipeline
+        # Fetch full receipt from Alchemy for $50k+ Whale Alert transactions
+        usd_value = whale_data.get('amount_usd', 0)
+        if usd_value >= 50_000 and transaction_data['tx_hash']:
+            try:
+                from utils.alchemy_rpc import fetch_receipt_if_needed
+                receipt = fetch_receipt_if_needed(
+                    transaction_data['tx_hash'], usd_value, transaction_data['blockchain']
+                )
+                if receipt:
+                    transaction_data['receipt'] = receipt
+            except Exception:
+                pass
+        
         intelligence_result = whale_engine.analyze_transaction_comprehensive(transaction_data)
         
         # 🚀 GENERATE INVESTMENT SIGNALS 🚀
@@ -2603,96 +2633,26 @@ def start_monitoring_threads():
     threads = []
     
     try:
-        # 🚀 PRIORITY: Start Web3 event-driven monitors (ethereum & polygon)
-        print(BLUE + "🚀 Starting Web3 event-driven monitors..." + END)
-        try:
-            eth_thread = threading.Thread(
-                target=run_web3_transfer_monitor,
-                args=('ethereum',),
-                daemon=True,
-                name="Web3-Ethereum"
-            )
-            eth_thread.start()
-            threads.append(eth_thread)
-            print(GREEN + "✅ Web3 Ethereum monitor started" + END)
-        except Exception as e:
-            print(RED + f"❌ Error starting Web3 Ethereum monitor: {e}" + END)
-        try:
-            poly_thread = threading.Thread(
-                target=run_web3_transfer_monitor,
-                args=('polygon',),
-                daemon=True,
-                name="Web3-Polygon"
-            )
-            poly_thread.start()
-            threads.append(poly_thread)
-            print(GREEN + "✅ Web3 Polygon monitor started" + END)
-        except Exception as e:
-            print(RED + f"❌ Error starting Web3 Polygon monitor: {e}" + END)
+        # Web3 get_logs polling DISABLED to conserve Alchemy CU budget.
+        # Etherscan multi-token polling is the primary data source.
+        # Alchemy receipt fetching ($50k+ txs) still works via the kept Web3 connection.
+        print(YELLOW + "ℹ️  Web3 get_logs polling disabled (saves ~1M CU/hour)" + END)
+        print(YELLOW + "   → Transfer monitors: DISABLED (Etherscan polling covers this)" + END)
+        print(YELLOW + "   → Swap monitors (Uniswap/Curve/Balancer): DISABLED" + END)
+        print(YELLOW + "   → 1inch monitors: DISABLED" + END)
+        print(YELLOW + "   → Alchemy receipt fetching for $50k+ txs: ACTIVE" + END)
 
-        # Start Web3 swap monitors (Uniswap v2/v3) for exact DEX swaps
-        try:
-            eth_swaps_thread = threading.Thread(
-                target=run_web3_swap_monitor,
-                args=('ethereum',),
-                daemon=True,
-                name="Web3-Ethereum-Swaps"
-            )
-            eth_swaps_thread.start()
-            threads.append(eth_swaps_thread)
-            print(GREEN + "✅ Web3 Ethereum swaps monitor started" + END)
-        except Exception as e:
-            print(RED + f"❌ Error starting Web3 Ethereum swaps monitor: {e}" + END)
-        try:
-            poly_swaps_thread = threading.Thread(
-                target=run_web3_swap_monitor,
-                args=('polygon',),
-                daemon=True,
-                name="Web3-Polygon-Swaps"
-            )
-            poly_swaps_thread.start()
-            threads.append(poly_swaps_thread)
-            print(GREEN + "✅ Web3 Polygon swaps monitor started" + END)
-        except Exception as e:
-            print(RED + f"❌ Error starting Web3 Polygon swaps monitor: {e}" + END)
-        
-        # Start 1inch monitors (Transfer delta analysis)
-        try:
-            eth_1inch_thread = threading.Thread(
-                target=run_1inch_monitor,
-                args=('ethereum',),
-                daemon=True,
-                name="1inch-Ethereum"
-            )
-            eth_1inch_thread.start()
-            threads.append(eth_1inch_thread)
-            print(GREEN + "✅ 1inch Ethereum monitor started" + END)
-        except Exception as e:
-            print(RED + f"❌ Error starting 1inch Ethereum monitor: {e}" + END)
-        try:
-            poly_1inch_thread = threading.Thread(
-                target=run_1inch_monitor,
-                args=('polygon',),
-                daemon=True,
-                name="1inch-Polygon"
-            )
-            poly_1inch_thread.start()
-            threads.append(poly_1inch_thread)
-            print(GREEN + "✅ 1inch Polygon monitor started" + END)
-        except Exception as e:
-            print(RED + f"❌ Error starting 1inch Polygon monitor: {e}" + END)
-
-        # Etherscan fallback: start multi-token polling as a supplementary source
-        print(BLUE + "🔧 Starting Etherscan fallback multi-token polling..." + END)
+        # Etherscan PRIMARY: start multi-token polling as the main data source
+        print(BLUE + "🚀 Starting Etherscan multi-token polling (primary data source)..." + END)
         try:
             multi_token_threads = start_multi_token_monitoring()
             if multi_token_threads:
                 threads.extend(multi_token_threads)
-                print(GREEN + f"✅ Fallback multi-token monitor started ({len(multi_token_threads)} groups)" + END)
+                print(GREEN + f"✅ Etherscan multi-token monitor started ({len(multi_token_threads)} groups)" + END)
             else:
-                print(YELLOW + "⚠️ Fallback multi-token monitor could not be started" + END)
+                print(YELLOW + "⚠️ Etherscan multi-token monitor could not be started" + END)
         except Exception as e:
-            print(RED + f"❌ Error starting fallback monitor: {e}" + END)
+            print(RED + f"❌ Error starting Etherscan monitor: {e}" + END)
         
         # Try to start Whale Alert monitor
         try:
@@ -2716,16 +2676,16 @@ def start_monitoring_threads():
         except Exception as e:
             print(RED + f"❌ Error starting XRP monitor: {e}" + END)
         
-        # Try to start Polygon monitor
+        # Start Polygon Alchemy monitor (replaced deprecated Polygonscan V1)
         try:
             polygon_thread = threading.Thread(
                 target=print_new_polygon_transfers,
                 daemon=True,
-                name="Polygon"
+                name="Polygon-Alchemy"
             )
             polygon_thread.start()
             threads.append(polygon_thread)
-            print(GREEN + "✅ Polygon monitor started" + END)
+            print(GREEN + "✅ Polygon Alchemy monitor started" + END)
         except Exception as e:
             print(RED + f"❌ Error starting Polygon monitor: {e}" + END)
         
@@ -2753,16 +2713,36 @@ def start_monitoring_threads():
         except Exception as e:
             print(RED + f"❌ Error starting Solana API monitor: {e}" + END)
         
-        # Start real-time DEX monitoring
+        # Start Bitcoin Alchemy monitor
         try:
-            real_time_threads = start_real_time_monitoring()
-            threads.extend(real_time_threads)
-            if real_time_threads:
-                print(GREEN + f"✅ Real-time DEX monitoring started ({len(real_time_threads)} threads)" + END)
-            else:
-                print(YELLOW + "⚠️ Real-time DEX monitoring not available" + END)
+            from chains.bitcoin_alchemy import poll_bitcoin_blocks
+            btc_thread = threading.Thread(
+                target=poll_bitcoin_blocks,
+                daemon=True,
+                name="Bitcoin-Alchemy"
+            )
+            btc_thread.start()
+            threads.append(btc_thread)
+            print(GREEN + "✅ Bitcoin Alchemy monitor started" + END)
         except Exception as e:
-            print(RED + f"❌ Error starting real-time monitoring: {e}" + END)
+            print(RED + f"❌ Error starting Bitcoin monitor: {e}" + END)
+
+        # Start Tron Alchemy monitor
+        try:
+            from chains.tron_alchemy import poll_tron_blocks
+            tron_thread = threading.Thread(
+                target=poll_tron_blocks,
+                daemon=True,
+                name="Tron-Alchemy"
+            )
+            tron_thread.start()
+            threads.append(tron_thread)
+            print(GREEN + "✅ Tron Alchemy monitor started" + END)
+        except Exception as e:
+            print(RED + f"❌ Error starting Tron monitor: {e}" + END)
+
+        # Real-time DEX monitoring DISABLED (uses get_logs, burns CU)
+        print(YELLOW + "ℹ️  Real-time DEX swap monitoring disabled (CU conservation)" + END)
         
         # 🚀 NEW: Start whale sentiment aggregation service
         try:

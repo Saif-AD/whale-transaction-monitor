@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 import threading
 import websocket
@@ -192,17 +193,29 @@ def on_whale_message(ws, message):
         print(f"Error processing Whale Alert message: {e}")
 
 def on_whale_error(ws, error):
-    print(f"\n[Whale Alert WS Error] {error}")
-    if "429" in str(error):
-        print("Rate limit encountered – pausing 120 seconds before reconnect.")
-        time.sleep(120)  # Longer pause for rate limits
+    error_str = str(error)
+    if "401" in error_str or "Unauthorized" in error_str:
+        safe_print("⚠️  Whale Alert API key expired or invalid. Renew at https://whale-alert.io/")
+        safe_print("   Whale Alert monitoring paused until key is renewed.")
+    elif "429" in error_str:
+        safe_print("Whale Alert rate limit – pausing 120 seconds before reconnect.")
+        time.sleep(120)
+    else:
+        safe_print(f"[Whale Alert WS Error] {type(error).__name__}: {error_str[:200]}")
 
 def on_whale_close(ws, close_status_code, close_msg):
-    print(f"Whale Alert WS closed (code: {close_status_code}). Message: {close_msg}")
-    wait_time = 30 if close_status_code else 120  # Increased wait times
-    print(f"Reconnecting in {wait_time} seconds...")
-    time.sleep(wait_time)
-    connect_whale_websocket()
+    close_msg_str = str(close_msg) if close_msg else ""
+    if close_status_code == 401 or "401" in close_msg_str or "Unauthorized" in close_msg_str:
+        safe_print("⚠️  Whale Alert: 401 Unauthorized – API key expired.")
+        safe_print("   → Renew your key at https://whale-alert.io/")
+        safe_print("   → Whale Alert monitoring disabled until key is renewed.")
+        return
+    safe_print(f"Whale Alert WS closed (code: {close_status_code}).")
+    wait_time = 30 if close_status_code else 120
+    safe_print(f"Reconnecting in {wait_time} seconds...")
+    if not shutdown_flag.is_set():
+        time.sleep(wait_time)
+        connect_whale_websocket()
 
 def on_whale_open(ws):
     print("Whale Alert WS connection established.")
@@ -230,6 +243,7 @@ def on_whale_open(ws):
     print(json.dumps(subscription_request, indent=2))
 
 def connect_whale_websocket():
+    logging.getLogger("websocket").setLevel(logging.WARNING)
     ws_app = websocket.WebSocketApp(
         WHALE_WS_URL,
         on_open=on_whale_open,
@@ -237,22 +251,24 @@ def connect_whale_websocket():
         on_error=on_whale_error,
         on_close=on_whale_close
     )
-    ws_app.run_forever(ping_interval=60)  # Add ping_interval
+    wst = threading.Thread(
+        target=lambda: ws_app.run_forever(ping_interval=60),
+        daemon=True
+    )
+    wst.start()
+    return wst
 
 def start_whale_thread():
-    """
-    Start the Whale Alert monitoring thread with proper error handling
-    """
+    """Start the Whale Alert monitoring thread with proper error handling."""
     try:
-        # Check if API key is valid
         if not WHALE_ALERT_API_KEY or len(WHALE_ALERT_API_KEY) < 10:
-            safe_print("⚠️ Invalid Whale Alert API key. Whale monitoring disabled.")
+            safe_print("⚠️  Whale Alert API key missing or invalid. Monitoring disabled.")
+            safe_print("   → Set your key in config/api_keys.py or renew at https://whale-alert.io/")
             return None
-            
-        # Start the websocket connection
+
         thread = connect_whale_websocket()
         if thread:
-            thread.name = "WhaleAlert"  # Name the thread for monitoring
+            thread.name = "WhaleAlert"
             return thread
         else:
             safe_print("⚠️ Failed to start Whale Alert monitoring.")
