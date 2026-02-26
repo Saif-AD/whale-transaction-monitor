@@ -10,6 +10,10 @@ from chains.ethereum import print_new_erc20_transfers
 from chains.whale_alert import start_whale_thread
 from chains.xrp import start_xrp_thread
 from chains.solana import start_solana_thread
+from chains.polygon import print_new_polygon_transfers
+from chains.bitcoin_alchemy import poll_bitcoin_blocks
+from chains.tron_alchemy import poll_tron_blocks
+from chains.solana_api import print_new_solana_transfers
 from models.classes import initialize_prices
 from utils.dedup import get_stats as get_dedup_stats, deduplicator, deduped_transactions
 from config.settings import (
@@ -21,7 +25,15 @@ from config.settings import (
     solana_buy_counts,
     solana_sell_counts,
     xrp_buy_counts,
-    xrp_sell_counts
+    xrp_sell_counts,
+    polygon_buy_counts,
+    polygon_sell_counts,
+    bitcoin_buy_counts,
+    bitcoin_sell_counts,
+    tron_buy_counts,
+    tron_sell_counts,
+    solana_api_buy_counts,
+    solana_api_sell_counts,
 )
 
 app = Flask(__name__)
@@ -118,7 +130,47 @@ def get_stats():
         token_stats['XRP'] = {'buys': 0, 'sells': 0}
     token_stats['XRP']['buys'] += xrp_buy_counts
     token_stats['XRP']['sells'] += xrp_sell_counts
-    
+
+    # Process Polygon transactions
+    for symbol, count in polygon_buy_counts.items():
+        if symbol not in token_stats:
+            token_stats[symbol] = {'buys': 0, 'sells': 0}
+        token_stats[symbol]['buys'] += count
+    for symbol, count in polygon_sell_counts.items():
+        if symbol not in token_stats:
+            token_stats[symbol] = {'buys': 0, 'sells': 0}
+        token_stats[symbol]['sells'] += count
+
+    # Process Bitcoin transactions
+    for symbol, count in bitcoin_buy_counts.items():
+        if symbol not in token_stats:
+            token_stats[symbol] = {'buys': 0, 'sells': 0}
+        token_stats[symbol]['buys'] += count
+    for symbol, count in bitcoin_sell_counts.items():
+        if symbol not in token_stats:
+            token_stats[symbol] = {'buys': 0, 'sells': 0}
+        token_stats[symbol]['sells'] += count
+
+    # Process Tron transactions
+    for symbol, count in tron_buy_counts.items():
+        if symbol not in token_stats:
+            token_stats[symbol] = {'buys': 0, 'sells': 0}
+        token_stats[symbol]['buys'] += count
+    for symbol, count in tron_sell_counts.items():
+        if symbol not in token_stats:
+            token_stats[symbol] = {'buys': 0, 'sells': 0}
+        token_stats[symbol]['sells'] += count
+
+    # Process Solana API transactions
+    for symbol, count in solana_api_buy_counts.items():
+        if symbol not in token_stats:
+            token_stats[symbol] = {'buys': 0, 'sells': 0}
+        token_stats[symbol]['buys'] += count
+    for symbol, count in solana_api_sell_counts.items():
+        if symbol not in token_stats:
+            token_stats[symbol] = {'buys': 0, 'sells': 0}
+        token_stats[symbol]['sells'] += count
+
     # Calculate additional statistics
     stats_list = []
     for symbol, stats in token_stats.items():
@@ -161,21 +213,50 @@ def start_monitors():
     """Start all transaction monitoring threads"""
     # Initialize token prices
     initialize_prices()
-    
-    # Start Ethereum monitoring
+
+    threads = []
+
+    # Start Ethereum monitoring (Etherscan discovery + Alchemy receipts)
     eth_thread = threading.Thread(target=print_new_erc20_transfers, daemon=True, name="Ethereum")
     eth_thread.start()
-    
+    threads.append(eth_thread)
+
     # Start Whale Alert monitoring
     whale_thread = start_whale_thread()
-    
+    if whale_thread:
+        threads.append(whale_thread)
+
     # Start XRP monitoring
     xrp_thread = start_xrp_thread()
-    
-    # Start Solana monitoring
+    if xrp_thread:
+        threads.append(xrp_thread)
+
+    # Start Solana WebSocket monitoring (Helius)
     solana_thread = start_solana_thread()
-    
-    return [eth_thread, whale_thread, xrp_thread, solana_thread]
+    if solana_thread:
+        threads.append(solana_thread)
+
+    # Start Solana API polling (Alchemy primary RPC)
+    solana_api_thread = threading.Thread(target=print_new_solana_transfers, daemon=True, name="Solana-API")
+    solana_api_thread.start()
+    threads.append(solana_api_thread)
+
+    # Start Polygon monitoring (Alchemy alchemy_getAssetTransfers)
+    polygon_thread = threading.Thread(target=print_new_polygon_transfers, daemon=True, name="Polygon-Alchemy")
+    polygon_thread.start()
+    threads.append(polygon_thread)
+
+    # Start Bitcoin monitoring (Alchemy block polling)
+    btc_thread = threading.Thread(target=poll_bitcoin_blocks, daemon=True, name="Bitcoin-Alchemy")
+    btc_thread.start()
+    threads.append(btc_thread)
+
+    # Start Tron monitoring (Alchemy block polling)
+    tron_thread = threading.Thread(target=poll_tron_blocks, daemon=True, name="Tron-Alchemy")
+    tron_thread.start()
+    threads.append(tron_thread)
+
+    return threads
 
 if __name__ == '__main__':
     print("Starting Flask server on http://0.0.0.0:8080")
