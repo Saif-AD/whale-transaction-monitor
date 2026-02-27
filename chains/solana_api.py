@@ -260,6 +260,19 @@ def print_new_solana_transfers():
                         if enriched_transaction.get('whale_classification'):
                             safe_print(f"  Whale Analysis: {enriched_transaction['whale_classification']}")
 
+                        # Persist enriched transaction to Supabase
+                        try:
+                            from utils.supabase_writer import store_transaction
+                            classification_data = {
+                                'classification': classification.upper(),
+                                'confidence': enriched_transaction.get('confidence_score', 0),
+                                'whale_score': enriched_transaction.get('whale_score', 0),
+                                'reasoning': enriched_transaction.get('whale_classification', ''),
+                            }
+                            store_transaction(event, classification_data)
+                        except Exception:
+                            pass
+
                 except Exception as e:
                     safe_print(f"Error processing Solana transfer: {str(e)}")
                     continue

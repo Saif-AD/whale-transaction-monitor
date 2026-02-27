@@ -315,7 +315,19 @@ def print_new_erc20_transfers():
                         # Record transfer for volume tracking
                         record_transfer(symbol, token_amount, from_addr, to_addr, tx_hash)
                     
-                    # TODO: Store enriched_transaction in Supabase here
+                    # Persist enriched transaction to Supabase
+                    if enriched_transaction:
+                        try:
+                            from utils.supabase_writer import store_transaction
+                            classification_data = {
+                                'classification': classification.upper() if classification else 'TRANSFER',
+                                'confidence': confidence,
+                                'whale_score': getattr(enriched_transaction, 'final_whale_score', 0.0) if hasattr(enriched_transaction, 'final_whale_score') else (enriched_transaction.get('whale_score', 0.0) if isinstance(enriched_transaction, dict) else 0.0),
+                                'reasoning': getattr(enriched_transaction, 'master_classifier_reasoning', '') if hasattr(enriched_transaction, 'master_classifier_reasoning') else (enriched_transaction.get('reasoning', '') if isinstance(enriched_transaction, dict) else ''),
+                            }
+                            store_transaction(event, classification_data)
+                        except Exception as e:
+                            safe_print(f"  Supabase write error: {e}")
                     
             except Exception as e:
                 error_msg = f"Error processing {symbol} transfer: {str(e)}"

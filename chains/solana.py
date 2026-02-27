@@ -137,6 +137,20 @@ def on_solana_message(ws, message):
                     safe_print(f"  Amount: {abs(amount_change):,.2f} {symbol}")
                     safe_print(f"  Classification: {classification} (confidence: {confidence})")
 
+                # Persist classified transaction to Supabase
+                if confidence >= 2:
+                    try:
+                        from utils.supabase_writer import store_transaction
+                        classification_data = {
+                            'classification': classification.upper(),
+                            'confidence': float(confidence) / 10.0,  # Normalize to 0-1
+                            'whale_score': 0.0,
+                            'reasoning': f'Solana WS classification: {classification}',
+                        }
+                        store_transaction(event, classification_data)
+                    except Exception:
+                        pass
+
                 # Update balance tracking
                 if owner not in solana_previous_balances:
                     solana_previous_balances[owner] = {}
