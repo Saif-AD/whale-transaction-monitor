@@ -259,11 +259,13 @@ def start_monitors():
     return threads
 
 if __name__ == '__main__':
-    print("Starting Flask server on http://0.0.0.0:8080")
-    
+    import os
+    port = int(os.environ.get('PORT', 8080))
+    print(f"Starting Flask server on http://0.0.0.0:{port}")
+
     # Start monitoring threads
     monitor_threads = start_monitors()
     print(f"Started {len([t for t in monitor_threads if t and t.is_alive()])} monitoring threads")
-    
+
     # Start the Flask app
-    app.run(debug=True, host='0.0.0.0', port=8080)
+    app.run(debug=False, host='0.0.0.0', port=port)
