@@ -1,7 +1,16 @@
-[build]
+[
+build
+]
 builder = "NIXPACKS"
 
-[deploy]
+[
+build.nixpacksPlan.phases.setup
+]
+nixPkgs = ["python311"]
+
+[
+deploy
+]
 startCommand = "python app.py"
 healthcheckPath = "/"
 healthcheckTimeout = 300
