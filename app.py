@@ -1,6 +1,7 @@
 # In app.py
 
 from flask import Flask, render_template, jsonify, request
+from flask_socketio import SocketIO
 import time
 import threading
 import json
@@ -37,6 +38,7 @@ from config.settings import (
 )
 
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="gevent")
 
 # Home route - render the main template
 @app.route('/')
@@ -209,10 +211,17 @@ def get_stats():
         }
     })
 
+def push_new_transaction(event):
+    """Push a new transaction to all connected clients via SocketIO"""
+    socketio.emit('new_transaction', event)
+
 def start_monitors():
     """Start all transaction monitoring threads"""
     # Initialize token prices
     initialize_prices()
+
+    # Register real-time push callback
+    deduplicator.on_new_transaction = push_new_transaction
 
     threads = []
 
@@ -267,5 +276,5 @@ if __name__ == '__main__':
     monitor_threads = start_monitors()
     print(f"Started {len([t for t in monitor_threads if t and t.is_alive()])} monitoring threads")
 
-    # Start the Flask app
-    app.run(debug=False, host='0.0.0.0', port=port)
+    # Start the Flask app with SocketIO
+    socketio.run(app, debug=False, host='0.0.0.0', port=port)

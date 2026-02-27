@@ -11,6 +11,7 @@ class TransactionDeduplicator:
         self.transactions = {}
         self.chain_hashes = defaultdict(set)
         self.address_timestamps = defaultdict(dict)
+        self.on_new_transaction = None  # Callback for real-time push
         self.stats = {
             'total_received': 0,
             'duplicates_caught': 0,
@@ -98,6 +99,13 @@ class TransactionDeduplicator:
             event['timestamp'] = current_time
 
         self.transactions[unique_key] = event
+
+        # Push to connected clients via SocketIO
+        if self.on_new_transaction:
+            try:
+                self.on_new_transaction(event)
+            except Exception:
+                pass  # Don't let push errors break the pipeline
 
         # Persist to Supabase (non-blocking)
         try:

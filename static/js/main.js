@@ -1,6 +1,7 @@
 // Global variables
 let lastTransactionTime = 0;
 let knownTokens = new Set();
+let socket = null;
 
 // Initialize when the document is ready
 document.addEventListener('DOMContentLoaded', function() {
@@ -10,22 +11,112 @@ document.addEventListener('DOMContentLoaded', function() {
     if (minValue) {
         document.getElementById('min-value-input').value = minValue;
     }
-    
+
     // Set up event listeners
     document.getElementById('set-min-value').addEventListener('click', updateMinValue);
     document.getElementById('blockchain-filter').addEventListener('change', fetchTransactions);
     document.getElementById('token-filter').addEventListener('change', fetchTransactions);
     document.getElementById('type-filter').addEventListener('change', fetchTransactions);
     document.getElementById('limit-filter').addEventListener('change', fetchTransactions);
-    
+
     // Initial data fetch
     fetchTransactions();
     fetchStats();
-    
-    // Set up periodic refreshes
-    setInterval(fetchTransactions, 5000); // Refresh transactions every 5 seconds
-    setInterval(fetchStats, 30000); // Refresh stats every 30 seconds
+
+    // Connect to Socket.IO for real-time updates
+    initSocketIO();
+
+    // Stats still poll (lightweight, no real-time need)
+    setInterval(fetchStats, 30000);
 });
+
+// Socket.IO real-time connection
+function initSocketIO() {
+    socket = io();
+
+    socket.on('connect', function() {
+        console.log('Real-time connection established');
+        showToast('Live updates connected');
+    });
+
+    socket.on('disconnect', function() {
+        console.log('Real-time connection lost, will auto-reconnect');
+    });
+
+    socket.on('new_transaction', function(tx) {
+        handleRealtimeTransaction(tx);
+    });
+}
+
+// Handle a single real-time transaction
+function handleRealtimeTransaction(tx) {
+    // Check if it passes current filters
+    const blockchain = document.getElementById('blockchain-filter').value;
+    const token = document.getElementById('token-filter').value;
+    const type = document.getElementById('type-filter').value;
+    const minValue = document.getElementById('min-value-input').value;
+
+    const txBlockchain = (tx.blockchain || tx.source || '').toLowerCase();
+    const txSymbol = (tx.symbol || '').toUpperCase();
+    const txType = (tx.classification || '').toLowerCase();
+    const txUsdValue = tx.usd_value || tx.estimated_usd || 0;
+
+    if (blockchain && txBlockchain !== blockchain.toLowerCase()) return;
+    if (token && txSymbol !== token.toUpperCase()) return;
+    if (type && txType !== type.toLowerCase()) return;
+    if (minValue && txUsdValue < parseFloat(minValue)) return;
+
+    // Add token to known set
+    if (tx.symbol) knownTokens.add(tx.symbol);
+
+    // Prepend to table (newest first)
+    const tableBody = document.getElementById('transactions-table');
+    const timestamp = tx.timestamp ? new Date(tx.timestamp * 1000) : new Date();
+    const hash = tx.tx_hash || '';
+    const chain = tx.blockchain || tx.source || 'unknown';
+
+    const newRow = document.createElement('tr');
+    newRow.className = 'new-transaction';
+    newRow.innerHTML = `
+        <td data-label="Blockchain">
+            ${getBlockchainIcon(chain)}
+            ${capitalize(chain)}
+        </td>
+        <td data-label="Token">${tx.symbol || ''}</td>
+        <td data-label="Amount">${formatNumber(tx.amount || 0)} ${tx.symbol || ''}</td>
+        <td data-label="USD Value">$${formatNumber(txUsdValue)}</td>
+        <td data-label="Type">
+            <span class="badge bg-${getTypeColor(tx.classification || 'transfer')}">${capitalize(tx.classification || 'transfer')}</span>
+        </td>
+        <td data-label="Time">
+            <span title="${timestamp.toLocaleString()}">${formatTimeAgo(timestamp)}</span>
+        </td>
+        <td data-label="Transaction">
+            <span class="tx-hash" onclick="copyToClipboard('${hash}')" title="Click to copy">
+                ${truncateHash(hash)}
+            </span>
+            ${getBlockExplorerLink(chain, hash)}
+        </td>
+    `;
+
+    // Insert at top of table
+    tableBody.insertBefore(newRow, tableBody.firstChild);
+
+    // Enforce row limit
+    const limit = parseInt(document.getElementById('limit-filter').value) || 50;
+    while (tableBody.children.length > limit) {
+        tableBody.removeChild(tableBody.lastChild);
+    }
+
+    // Update count
+    const count = document.getElementById('transaction-count');
+    count.textContent = tableBody.children.length;
+
+    // Update lastTransactionTime
+    if (tx.timestamp > lastTransactionTime) {
+        lastTransactionTime = tx.timestamp;
+    }
+}
 
 // Function to fetch transactions from the API
 function fetchTransactions() {
