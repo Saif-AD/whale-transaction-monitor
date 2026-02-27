@@ -5,10 +5,9 @@ idna==3.10
 requests==2.32.5
 urllib3==2.5.0
 
-# WebSocket and keyboard handling
+# WebSocket
 websocket-client==1.8.0
 websockets==15.0.1
-keyboard==0.13.5
 
 # Platform-specific dependencies
 windows-curses==2.3.1; platform_system == "Windows"
@@ -60,8 +59,8 @@ ratelimit==2.2.1
 backoff==2.2.1
 
 # Data processing
-pandas==2.1.4
-numpy==1.24.4
+pandas==2.2.3
+numpy==1.26.4
 GitPython==3.1.40
 
 # Blockchain and crypto
