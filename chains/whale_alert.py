@@ -189,6 +189,30 @@ def on_whale_message(ws, message):
             print(f"\nTotal USD Value: ${total_usd_value:,.2f}")
             print("="*50 + "\n")
 
+            # Persist to Supabase with classification data
+            try:
+                from utils.supabase_writer import store_transaction
+                for transfer in valid_transfers:
+                    wa_event = {
+                        "blockchain": blockchain,
+                        "tx_hash": tx_hash,
+                        "from": tx_from,
+                        "to": tx_to,
+                        "symbol": transfer["symbol"],
+                        "usd_value": transfer["usd_value"],
+                        "timestamp": data.get("timestamp", time.time()),
+                        "source": "whale_alert"
+                    }
+                    classification_data = {
+                        'classification': classification.upper(),
+                        'confidence': confidence,
+                        'whale_score': whale_score,
+                        'reasoning': reasoning,
+                    }
+                    store_transaction(wa_event, classification_data)
+            except Exception as e:
+                print(f"  Supabase write error: {e}")
+
     except Exception as e:
         print(f"Error processing Whale Alert message: {e}")
 
