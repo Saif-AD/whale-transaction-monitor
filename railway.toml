@@ -4,8 +4,11 @@ builder = "NIXPACKS"
 [build.nixpacksPlan.phases.setup]
 nixPkgs = ["python311"]
 
+[build.nixpacksPlan.phases.install]
+cmds = [". /app/.venv/bin/activate && pip install -r requirements.txt"]
+
 [deploy]
-startCommand = "python app.py"
+startCommand = ". /app/.venv/bin/activate && python app.py"
 healthcheckPath = "/"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
