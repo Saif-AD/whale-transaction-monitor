@@ -121,17 +121,9 @@ class TransactionDeduplicator:
             except Exception:
                 pass  # Don't let push errors break the pipeline
 
-        # Persist to Supabase (non-blocking)
-        try:
-            from utils.supabase_writer import store_transaction
-            import threading
-            threading.Thread(
-                target=store_transaction,
-                args=(event,),
-                daemon=True
-            ).start()
-        except Exception:
-            pass  # Don't let Supabase errors break the pipeline
+        # NOTE: Supabase persistence is handled by each chain monitor directly
+        # (e.g., ethereum.py → store_transaction, bitcoin_alchemy.py → store_alchemy_transaction).
+        # This avoids duplicate writes and ensures classification data is included.
 
         return True
 

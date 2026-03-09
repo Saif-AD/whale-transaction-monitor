@@ -104,6 +104,22 @@ def on_xrp_message(ws, message):
                 record_transfer("XRP", amount_xrp, txn.get("Account", ""),
                     txn.get("Destination", ""), tx_hash)
 
+            # Persist to Supabase with classification data
+            try:
+                from utils.supabase_writer import store_transaction
+                classification_data = {
+                    'classification': classification,
+                    'confidence': 0.8 if classification != 'TRANSFER' else 0.5,
+                    'whale_score': 0.0,
+                    'reasoning': f"XRP {'exchange withdrawal' if classification == 'BUY' else 'exchange deposit' if classification == 'SELL' else 'transfer'}",
+                    'whale_address': from_addr if classification == 'SELL' else to_addr,
+                    'counterparty_address': to_addr if classification == 'SELL' else from_addr,
+                    'counterparty_type': 'CEX' if (from_is_exchange or to_is_exchange) else '',
+                }
+                store_transaction(event, classification_data)
+            except Exception as e:
+                safe_print(f"  XRP Supabase write error: {e}")
+
             # Update buy/sell counters (dict-style, same as all other chains)
             if classification in ("BUY", "MODERATE_BUY", "VERIFIED_SWAP_BUY"):
                 _settings.xrp_buy_counts['XRP'] += 1

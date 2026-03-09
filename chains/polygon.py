@@ -189,6 +189,29 @@ def _classify_and_store(event: dict):
     event['classification'] = classification
     handle_event(event)
 
+    # Persist to Supabase with classification data
+    try:
+        from utils.supabase_writer import store_transaction
+        classification_data = {
+            'classification': classification,
+            'confidence': 0.7 if classification != 'TRANSFER' else 0.4,
+            'whale_score': 0.0,
+            'reasoning': f"Polygon {classification.lower()} detected via WhaleIntelligenceEngine",
+        }
+        if enriched and isinstance(enriched, dict):
+            classification_data['whale_score'] = enriched.get('whale_score', 0.0)
+            classification_data['confidence'] = enriched.get('confidence', classification_data['confidence'])
+            classification_data['reasoning'] = enriched.get('reasoning', classification_data['reasoning'])
+            classification_data['whale_address'] = enriched.get('whale_address', '')
+            classification_data['counterparty_address'] = enriched.get('counterparty_address', '')
+            classification_data['counterparty_type'] = enriched.get('counterparty_type', '')
+            classification_data['from_label'] = enriched.get('from_label', '')
+            classification_data['to_label'] = enriched.get('to_label', '')
+        store_transaction(event, classification_data)
+    except Exception as e:
+        from utils.base_helpers import safe_print as _sp
+        _sp(f"  Polygon Supabase write error: {e}")
+
     from config.settings import polygon_buy_counts, polygon_sell_counts
     if classification in ('BUY', 'MODERATE_BUY', 'BUY_MODERATE'):
         polygon_buy_counts[event['symbol']] += 1
