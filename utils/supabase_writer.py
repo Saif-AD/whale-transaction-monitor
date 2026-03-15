@@ -1,10 +1,10 @@
-"""Supabase Writer - Persists whale transactions to per-blockchain Supabase tables.
+"""Supabase Writer - Persists whale transactions to Supabase tables.
 
-Routes each transaction to its chain-specific table:
-  ethereum_transactions, bitcoin_transactions, solana_transactions,
-  polygon_transactions, tron_transactions, xrp_transactions
+Writes each transaction to BOTH:
+  1. A chain-specific table (ethereum_transactions, bitcoin_transactions, etc.)
+  2. The unified all_whale_transactions table (used by the Sonar dashboard)
 
-All tables share the same schema as whale_transactions / alchemy_transactions.
+All tables share the same schema.
 """
 
 import time
@@ -199,9 +199,18 @@ def store_transaction(event: Dict[str, Any], classification_data: Optional[Dict[
             on_conflict='transaction_hash'
         ).execute()
 
+        # Also write to the unified all_whale_transactions table (Sonar dashboard reads from this)
+        try:
+            client.table('all_whale_transactions').upsert(
+                row,
+                on_conflict='transaction_hash'
+            ).execute()
+        except Exception as e:
+            logger.warning(f"Failed to write to all_whale_transactions: {e}")
+
         if result.data:
             logger.info(
-                f"Stored -> {table_name}: {row['token_symbol']} "
+                f"Stored -> {table_name} + all_whale_transactions: {row['token_symbol']} "
                 f"${row['usd_value']:,.0f} {row['classification']}"
             )
             return True
