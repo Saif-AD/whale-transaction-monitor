@@ -1317,9 +1317,18 @@ class TransactionStorage:
                 whale_data,
                 on_conflict='transaction_hash'
             ).execute()
-            
+
+            # Also write to unified all_whale_transactions table (Sonar dashboard reads from this)
+            try:
+                self.supabase.table('all_whale_transactions').upsert(
+                    whale_data,
+                    on_conflict='transaction_hash'
+                ).execute()
+            except Exception as e:
+                production_logger.warning(f"Failed to write to all_whale_transactions: {e}")
+
             if result.data:
-                production_logger.info("Whale transaction stored successfully", 
+                production_logger.info("Whale transaction stored successfully",
                                      extra={'extra_fields': {
                                          'tx_hash': whale_data['transaction_hash'],
                                          'classification': classification_str,
