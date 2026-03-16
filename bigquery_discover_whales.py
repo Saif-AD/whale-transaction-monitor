@@ -51,10 +51,10 @@ BATCH_SIZE = 200
 API_DELAY = 0.22  # rate limit between API calls
 
 # Quality thresholds (per-chain overrides below)
-MIN_LARGE_TX_COUNT = 5
-RECENT_DAYS = 180
-MIN_BALANCE_USD = 100_000
-MAX_RESULTS_PER_QUERY = 5_000
+MIN_LARGE_TX_COUNT = 2
+RECENT_DAYS = 365
+MIN_BALANCE_USD = 10_000
+MAX_RESULTS_PER_QUERY = 10_000
 
 # --- Chain configs ---
 # Each chain has:
@@ -72,8 +72,8 @@ CHAINS = {
         'decimals': 18,
         'native_symbol': 'ETH',
         'native_price_usd': 3000,
-        'min_tx_value': 1,       # 1 ETH minimum per tx
-        'min_volume': 100,       # 100 ETH total
+        'min_tx_value': 0.5,     # 0.5 ETH (~$1.5K) per tx
+        'min_volume': 10,        # 10 ETH (~$30K) total
         'explorer_url': 'https://api.etherscan.io/api',
         'explorer_key': ETHERSCAN_API_KEY,
     },
@@ -83,8 +83,8 @@ CHAINS = {
         'decimals': 18,
         'native_symbol': 'MATIC',
         'native_price_usd': 0.8,
-        'min_tx_value': 5000,    # 5000 MATIC (~$4K)
-        'min_volume': 100_000,   # 100K MATIC (~$80K)
+        'min_tx_value': 1000,    # 1000 MATIC (~$800)
+        'min_volume': 25_000,    # 25K MATIC (~$20K)
         'explorer_url': 'https://api.polygonscan.com/api',
         'explorer_key': POLYGONSCAN_API_KEY,
     },
@@ -94,8 +94,8 @@ CHAINS = {
         'decimals': 8,
         'native_symbol': 'BTC',
         'native_price_usd': 95000,
-        'min_tx_value': 0.5,     # 0.5 BTC (~$47K)
-        'min_volume': 10,        # 10 BTC (~$950K)
+        'min_tx_value': 0.1,     # 0.1 BTC (~$9.5K)
+        'min_volume': 1,         # 1 BTC (~$95K)
     },
     'solana': {
         'dataset': 'crypto_solana_mainnet_us',
@@ -103,8 +103,8 @@ CHAINS = {
         'decimals': 9,
         'native_symbol': 'SOL',
         'native_price_usd': 150,
-        'min_tx_value': 100,     # 100 SOL (~$15K)
-        'min_volume': 1000,      # 1000 SOL (~$150K)
+        'min_tx_value': 10,      # 10 SOL (~$1.5K)
+        'min_volume': 100,       # 100 SOL (~$15K)
     },
     'xrp': {
         'dataset': 'crypto_xrp',
@@ -112,8 +112,8 @@ CHAINS = {
         'decimals': 6,
         'native_symbol': 'XRP',
         'native_price_usd': 2.5,
-        'min_tx_value': 50_000,  # 50K XRP (~$125K)
-        'min_volume': 500_000,   # 500K XRP (~$1.25M)
+        'min_tx_value': 5_000,   # 5K XRP (~$12.5K)
+        'min_volume': 50_000,    # 50K XRP (~$125K)
     },
 }
 
@@ -231,7 +231,7 @@ def discover_evm_smart_money(bq, chain, cfg):
       AND from_address IS NOT NULL
       AND LOWER(from_address) NOT IN ({cex_list})
     GROUP BY address
-    HAVING unique_contracts >= 50 AND total_native >= {min_vol} AND tx_count >= 20
+    HAVING unique_contracts >= 20 AND total_native >= {min_vol} AND tx_count >= 10
       AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), last_active, DAY) <= {RECENT_DAYS}
     ORDER BY unique_contracts DESC, total_native DESC
     LIMIT {MAX_RESULTS_PER_QUERY}
@@ -365,8 +365,8 @@ def discover_solana_whales(bq, cfg):
       AND ARRAY_LENGTH(accounts) > 0
       AND fee > 0
     GROUP BY address
-    HAVING tx_count >= 100
-      AND total_fees_sol >= 1.0
+    HAVING tx_count >= 20
+      AND total_fees_sol >= 0.1
     ORDER BY tx_count DESC
     LIMIT {MAX_RESULTS_PER_QUERY}
     """
@@ -536,7 +536,7 @@ def verify_and_filter(candidates, chain, cfg, max_verify=1000):
 
         balance_native, balance_usd, contract_name = result
 
-        if balance_usd < MIN_BALANCE_USD and not contract_name:
+        if balance_usd < MIN_BALANCE_USD and not contract_name:  # $10K
             continue
 
         # Skip infrastructure contracts
