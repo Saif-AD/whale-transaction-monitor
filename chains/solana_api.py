@@ -321,7 +321,20 @@ def fetch_solana_token_transfers():
     
     # Track where we actually scanned up to (add back the 50 offset)
     _global_last_sig = end_target + 50
-    return results
+    
+    # Deduplicate: DEX swaps create two balance changes per tx (buyer + seller)
+    # Keep only one side per (tx_hash, symbol) — prefer the BUY side (positive diff = receiving tokens)
+    seen_tx_tokens = {}  # (tx_hash, symbol) -> event
+    for r in results:
+        key = (r['tx_hash'], r['symbol'])
+        if key not in seen_tx_tokens:
+            seen_tx_tokens[key] = r
+        else:
+            # If existing entry has no 'to' (is the sell side) and this one does, replace
+            if not seen_tx_tokens[key].get('to') and r.get('to'):
+                seen_tx_tokens[key] = r
+    
+    return list(seen_tx_tokens.values())
 
 
 def print_new_solana_transfers():

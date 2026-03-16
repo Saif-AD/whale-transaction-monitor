@@ -26,6 +26,43 @@ from utils.dedup import deduplicator, get_dedup_stats, deduped_transactions, han
 total_transfers_fetched = 0
 filtered_by_threshold = 0
 
+# Track seen transaction hashes to prevent double-counting DEX swap sides
+# Each Solana DEX swap fires two account updates (buyer + seller)
+# We only want to record one side per original tx hash
+_seen_solana_tx_hashes = {}  # tx_hash -> (timestamp, classification)
+_SOLANA_DEDUP_WINDOW = 30  # seconds
+
+def _solana_tx_already_seen(tx_hash, classification):
+    """
+    Check if we've already processed one side of this Solana transaction.
+    For DEX swaps, both buyer and seller fire events with the same tx_hash.
+    We keep the BUY side (directional actor) and skip the SELL side.
+    Returns True if this event should be skipped.
+    """
+    now = time.time()
+    
+    # Clean old entries (older than dedup window)
+    expired = [k for k, v in _seen_solana_tx_hashes.items() if now - v[0] > _SOLANA_DEDUP_WINDOW]
+    for k in expired:
+        del _seen_solana_tx_hashes[k]
+    
+    if tx_hash in _seen_solana_tx_hashes:
+        prev_time, prev_class = _seen_solana_tx_hashes[tx_hash]
+        # If we previously stored a BUY, skip this duplicate
+        # If we previously stored a SELL and this is a BUY, let BUY through (upgrade)
+        if prev_class == 'buy':
+            return True  # Already have the BUY side, skip
+        elif classification == 'buy':
+            # We had the SELL side, but BUY is better — allow this one through
+            _seen_solana_tx_hashes[tx_hash] = (now, classification)
+            return False
+        else:
+            return True  # Both are SELL, skip the duplicate
+    
+    # First time seeing this tx_hash
+    _seen_solana_tx_hashes[tx_hash] = (now, classification)
+    return False
+
 # In solana.py - update the on_solana_message function
 
 # In solana.py - Update the on_solana_message function
@@ -117,6 +154,10 @@ def on_solana_message(ws, message):
 
                 # Add classification to the event before dedup
                 event["classification"] = classification
+
+                # Skip duplicate side of DEX swaps (same tx_hash, opposite classification)
+                if _solana_tx_already_seen(tx_hash, classification):
+                    continue
 
                 # Check if it's a duplicate before processing
                 if not handle_event(event):
