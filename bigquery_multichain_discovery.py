@@ -9,6 +9,7 @@ import sys
 from google.cloud import bigquery
 from supabase import create_client
 from config.api_keys import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+from utils.address_verification import verify_batch
 from datetime import datetime
 import time
 
@@ -281,53 +282,62 @@ def main():
     print()
     
     total_added = 0
-    
+    total_candidates = 0
+    total_verified = 0
+
     for chain, cfg in CHAINS.items():
         print("\n" + "="*80)
         print(f"🔗 {cfg['label'].upper()}")
         print("="*80)
-        
+
         # CEX
         cex = discover_cex(chain, cfg)
+        total_candidates += len(cex)
         if cex:
-            total_added += upsert(cex)
-        
+            verified_cex = verify_batch(cex, chain, max_verify=500)
+            total_verified += len(verified_cex)
+            if verified_cex:
+                total_added += upsert(verified_cex)
+
         # DEX (EVM only)
         if cfg['has_tokens']:
             dex = discover_dex(chain, cfg)
+            total_candidates += len(dex)
             if dex:
-                total_added += upsert(dex)
-        
+                verified_dex = verify_batch(dex, chain, max_verify=500)
+                total_verified += len(verified_dex)
+                if verified_dex:
+                    total_added += upsert(verified_dex)
+
         # Whales
         whales = discover_whales(chain, cfg)
+        total_candidates += len(whales)
         if whales:
-            total_added += upsert(whales)
+            verified_whales = verify_batch(whales, chain, max_verify=500)
+            total_verified += len(verified_whales)
+            if verified_whales:
+                total_added += upsert(verified_whales)
     
     print("\n" + "="*80)
-    print("✅ MULTI-CHAIN DISCOVERY COMPLETE")
+    print("MULTI-CHAIN DISCOVERY COMPLETE")
     print("="*80)
-    
+
     # Get AFTER counts
-    print("\n📊 BEFORE vs AFTER (No Duplicates!):")
-    print("─"*80)
     total_after = sb.table('addresses').select('id', count='exact').execute()
     total_increase = total_after.count - total_before.count
-    
-    print(f"   TOTAL:  {total_before.count:>8,} → {total_after.count:>8,} (+{total_increase:,})")
-    
+    drop_rate = ((total_candidates - total_verified) / total_candidates * 100
+                 if total_candidates > 0 else 0)
+
+    print(f"\n   BigQuery candidates:  {total_candidates:,}")
+    print(f"   Passed verification:  {total_verified:,}")
+    print(f"   Dropped (unverified): {total_candidates - total_verified:,} ({drop_rate:.0f}%)")
+    print(f"   Upserted to DB:      {total_added:,}")
+    print(f"   Net new addresses:   {total_increase:,}")
+
+    print(f"\n   TOTAL:  {total_before.count:>8,} -> {total_after.count:>8,}")
     for addr_type in ['CEX', 'DEX', 'WHALE']:
         result = sb.table('addresses').select('id', count='exact').eq('address_type', addr_type).execute()
         print(f"   {addr_type:6s}: {result.count:,}")
-    
-    print()
-    print(f"🔍 Duplicate Check:")
-    print(f"   ✅ Added {total_increase:,} unique addresses")
-    print(f"   ✅ No duplicates (UPSERT with unique constraint)")
-    print()
-    print("📊 Verify by blockchain:")
-    print("   SELECT blockchain, address_type, COUNT(*) FROM addresses")
-    print("   WHERE source LIKE 'bigquery_%'")
-    print("   GROUP BY blockchain, address_type ORDER BY blockchain, address_type;")
     print()
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ from datetime import datetime
 from google.cloud import bigquery
 from supabase import create_client
 from config.api_keys import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+from utils.address_verification import verify_batch
 
 logger = logging.getLogger(__name__)
 
@@ -423,6 +424,15 @@ def discover_multichain_stablecoin_whales(bq):
     return addresses
 
 
+def _group_by_chain(addresses: list) -> dict:
+    """Group address records by blockchain for per-chain verification."""
+    by_chain = {}
+    for addr in addresses:
+        chain = addr.get('blockchain', 'ethereum')
+        by_chain.setdefault(chain, []).append(addr)
+    return by_chain
+
+
 def main():
     print("=" * 80)
     print("CROSS-CHAIN VERIFIED WHALE DISCOVERY")
@@ -450,46 +460,68 @@ def main():
     print()
 
     total_upserted = 0
+    total_candidates = 0
+    total_verified = 0
 
     # Method 1: Shared-address whales
     print("\n" + "-" * 60)
     print("METHOD 1: Shared-Address Whales")
     print("-" * 60)
     shared = discover_shared_address_whales(bq)
+    total_candidates += len(shared)
     if shared:
-        total_upserted += upsert_addresses(sb, shared)
+        # Group by chain for per-chain verification
+        by_chain = _group_by_chain(shared)
+        for chain, addrs in by_chain.items():
+            verified = verify_batch(addrs, chain, max_verify=500)
+            total_verified += len(verified)
+            if verified:
+                total_upserted += upsert_addresses(sb, verified)
 
     # Method 2: Bridge whales
     print("\n" + "-" * 60)
     print("METHOD 2: High-Value Bridge Whales")
     print("-" * 60)
     bridge = discover_bridge_whales(bq)
+    total_candidates += len(bridge)
     if bridge:
-        total_upserted += upsert_addresses(sb, bridge)
+        by_chain = _group_by_chain(bridge)
+        for chain, addrs in by_chain.items():
+            verified = verify_batch(addrs, chain, max_verify=500)
+            total_verified += len(verified)
+            if verified:
+                total_upserted += upsert_addresses(sb, verified)
 
     # Method 3: Multi-chain stablecoin whales
     print("\n" + "-" * 60)
     print("METHOD 3: Multi-Chain Stablecoin Whales")
     print("-" * 60)
     stable = discover_multichain_stablecoin_whales(bq)
+    total_candidates += len(stable)
     if stable:
-        total_upserted += upsert_addresses(sb, stable)
+        by_chain = _group_by_chain(stable)
+        for chain, addrs in by_chain.items():
+            verified = verify_batch(addrs, chain, max_verify=500)
+            total_verified += len(verified)
+            if verified:
+                total_upserted += upsert_addresses(sb, verified)
 
     # Summary
     after = sb.table('addresses').select('id', count='exact').execute()
     crosschain_after = (sb.table('addresses').select('id', count='exact')
                         .eq('source', 'bigquery_crosschain_verified').execute())
     new_addresses = after.count - before.count
+    drop_rate = ((total_candidates - total_verified) / total_candidates * 100
+                 if total_candidates > 0 else 0)
 
     print("\n" + "=" * 80)
     print("CROSS-CHAIN DISCOVERY COMPLETE")
     print("=" * 80)
-    print(f"\n  Results:")
-    print(f"    Shared-address whales found: {len(shared):,}")
-    print(f"    Bridge whales found:         {len(bridge):,}")
-    print(f"    Stablecoin whales found:     {len(stable):,}")
-    print(f"    Total upserted:              {total_upserted:,}")
-    print(f"    Net new addresses:           {new_addresses:,}")
+    print(f"\n  BigQuery candidates:   {total_candidates:,}")
+    print(f"  Passed verification:   {total_verified:,}")
+    print(f"  Dropped (unverified):  {total_candidates - total_verified:,} ({drop_rate:.0f}%)")
+    print(f"  Upserted to Supabase:  {total_upserted:,}")
+    print(f"  Net new addresses:     {new_addresses:,}")
     print(f"\n  Database:")
     print(f"    Total:           {before.count:>8,} -> {after.count:>8,}")
     print(f"    Cross-chain:     {crosschain_before.count:>8,} -> {crosschain_after.count:>8,}")
