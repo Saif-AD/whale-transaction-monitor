@@ -28,39 +28,64 @@ filtered_by_threshold = 0
 
 # Track seen transaction hashes to prevent double-counting DEX swap sides
 # Each Solana DEX swap fires two account updates (buyer + seller)
-# We only want to record one side per original tx hash
-_seen_solana_tx_hashes = {}  # tx_hash -> (timestamp, classification)
+# We only want to record the WHALE side, not the DEX pool/vault side
+_seen_solana_tx_hashes = {}  # tx_hash -> (timestamp, classification, is_pool)
 _SOLANA_DEDUP_WINDOW = 30  # seconds
 
-def _solana_tx_already_seen(tx_hash, classification):
+# Known DEX pool/vault program addresses — these are passive counterparties, not whales
+_SOLANA_POOL_ADDRESSES = {
+    'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',   # Jupiter V6
+    'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB',   # Jupiter V4
+    'jupoNjAxXgZ4rjzxzPMP4oxduvQsQtZzyknqvzYNrNu',   # Jupiter Limit Order
+    '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',  # Raydium AMM V4
+    'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',  # Raydium CLMM
+    'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C',  # Raydium CPMM
+    'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',   # Orca Whirlpool
+    '9W959DqEETiGZocYWCQPaJ6sBmUzgfxXfqGeTEdp3aQP',  # Orca V2
+    'srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX',   # OpenBook V1
+    'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo',   # Meteora DLMM
+    'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',  # Meteora Pools
+    'PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjFHGqdXY',   # Phoenix DEX
+    'dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH',   # Drift V2
+    'MarBmsSgKXdrN1egZf5sqe1TMai9K1rChYNDJgjq7aD',   # Marinade Staking
+}
+
+def _is_pool_address(addr):
+    """Check if an address is a known DEX pool/vault (passive counterparty)."""
+    return addr in _SOLANA_POOL_ADDRESSES
+
+def _solana_tx_already_seen(tx_hash, classification, owner):
     """
     Check if we've already processed one side of this Solana transaction.
-    For DEX swaps, both buyer and seller fire events with the same tx_hash.
-    We keep the BUY side (directional actor) and skip the SELL side.
+    For DEX swaps, both the whale wallet and the DEX pool fire events.
+    We keep the WHALE side (non-pool address) and skip the pool side.
     Returns True if this event should be skipped.
     """
     now = time.time()
     
-    # Clean old entries (older than dedup window)
+    # Clean old entries
     expired = [k for k, v in _seen_solana_tx_hashes.items() if now - v[0] > _SOLANA_DEDUP_WINDOW]
     for k in expired:
         del _seen_solana_tx_hashes[k]
     
+    this_is_pool = _is_pool_address(owner)
+    
     if tx_hash in _seen_solana_tx_hashes:
-        prev_time, prev_class = _seen_solana_tx_hashes[tx_hash]
-        # If we previously stored a BUY, skip this duplicate
-        # If we previously stored a SELL and this is a BUY, let BUY through (upgrade)
-        if prev_class == 'buy':
-            return True  # Already have the BUY side, skip
-        elif classification == 'buy':
-            # We had the SELL side, but BUY is better — allow this one through
-            _seen_solana_tx_hashes[tx_hash] = (now, classification)
+        prev_time, prev_class, prev_is_pool = _seen_solana_tx_hashes[tx_hash]
+        
+        if prev_is_pool and not this_is_pool:
+            # Previous was the pool side, this is the whale — replace with whale side
+            _seen_solana_tx_hashes[tx_hash] = (now, classification, this_is_pool)
             return False
+        elif not prev_is_pool and this_is_pool:
+            # Previous was the whale, this is the pool — skip pool side
+            return True
         else:
-            return True  # Both are SELL, skip the duplicate
+            # Both are pool or both are whale — keep first one, skip duplicate
+            return True
     
     # First time seeing this tx_hash
-    _seen_solana_tx_hashes[tx_hash] = (now, classification)
+    _seen_solana_tx_hashes[tx_hash] = (now, classification, this_is_pool)
     return False
 
 # In solana.py - update the on_solana_message function
@@ -156,7 +181,7 @@ def on_solana_message(ws, message):
                 event["classification"] = classification
 
                 # Skip duplicate side of DEX swaps (same tx_hash, opposite classification)
-                if _solana_tx_already_seen(tx_hash, classification):
+                if _solana_tx_already_seen(tx_hash, classification, owner):
                     continue
 
                 # Check if it's a duplicate before processing

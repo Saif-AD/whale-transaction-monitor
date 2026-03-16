@@ -310,6 +310,7 @@ def fetch_solana_token_transfers():
                     'blockchain': 'solana',
                     'from': owner if diff < 0 else '',
                     'to': owner if diff > 0 else '',
+                    'owner': owner,
                     'symbol': symbol,
                     'amount': str(abs(diff)),
                     'tx_hash': tx_sig,
@@ -323,18 +324,26 @@ def fetch_solana_token_transfers():
     _global_last_sig = end_target + 50
     
     # Deduplicate: DEX swaps create two balance changes per tx (buyer + seller)
-    # Keep only one side per (tx_hash, symbol) — prefer the BUY side (positive diff = receiving tokens)
+    # Keep the WHALE side (non-pool address) and discard the DEX pool side
+    # This correctly preserves both real BUYs and real SELLs
+    _all_pool_addrs = SOLANA_DEX_ADDRESSES | SOLANA_CEX_ADDRESSES
+    
     seen_tx_tokens = {}  # (tx_hash, symbol) -> event
     for r in results:
         key = (r['tx_hash'], r['symbol'])
+        owner = r.get('owner', '')
+        this_is_pool = owner in _all_pool_addrs
+        
         if key not in seen_tx_tokens:
-            seen_tx_tokens[key] = r
+            seen_tx_tokens[key] = (r, this_is_pool)
         else:
-            # If existing entry has no 'to' (is the sell side) and this one does, replace
-            if not seen_tx_tokens[key].get('to') and r.get('to'):
-                seen_tx_tokens[key] = r
+            prev_event, prev_is_pool = seen_tx_tokens[key]
+            if prev_is_pool and not this_is_pool:
+                # Previous was pool side, this is the whale — replace
+                seen_tx_tokens[key] = (r, this_is_pool)
+            # Otherwise keep the first non-pool entry
     
-    return list(seen_tx_tokens.values())
+    return [event for event, _ in seen_tx_tokens.values()]
 
 
 def print_new_solana_transfers():
