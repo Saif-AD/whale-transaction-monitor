@@ -385,25 +385,49 @@ def _process_block(block: dict) -> int:
                 from_is_exchange = from_addr in BTC_EXCHANGE_ADDRESSES
                 to_is_exchange = to_addr in BTC_EXCHANGE_ADDRESSES
 
+                # Check ALL outputs for exchange involvement (not just this output)
+                any_output_exchange = False
+                any_output_non_exchange = False
+                for o in vout:
+                    o_spk = o.get("scriptPubKey", {})
+                    o_addr = o_spk.get("address") or (o_spk.get("addresses", [None]) or [None])[0]
+                    if o_addr and o_addr in BTC_EXCHANGE_ADDRESSES:
+                        any_output_exchange = True
+                    elif o_addr:
+                        any_output_non_exchange = True
+
+                # Check ALL inputs for exchange involvement
+                any_input_exchange = False
+                for v in vin:
+                    v_addr = v.get("prevout", {}).get("scriptPubKey", {}).get("address", "")
+                    if v_addr and v_addr in BTC_EXCHANGE_ADDRESSES:
+                        any_input_exchange = True
+                        break
+
                 if from_is_exchange and not to_is_exchange:
-                    classification = 'BUY'   # Withdrawal from exchange
+                    classification = 'BUY'
                 elif to_is_exchange and not from_is_exchange:
-                    classification = 'SELL'  # Deposit to exchange
+                    classification = 'SELL'
                 elif from_is_exchange and to_is_exchange:
-                    classification = 'TRANSFER'  # Exchange internal
+                    classification = 'TRANSFER'
                 elif from_addr == 'coinbase':
-                    classification = 'TRANSFER'  # Mining reward
+                    classification = 'TRANSFER'
+                elif any_input_exchange and not any_output_exchange:
+                    classification = 'BUY'
+                elif any_output_exchange and not any_input_exchange:
+                    classification = 'SELL'
                 else:
-                    # Heuristic: 1 input -> many outputs = exchange batch withdrawal (BUY)
-                    # Heuristic: many inputs -> 1 output = exchange consolidation (TRANSFER)
-                    # Heuristic: round BTC amounts (1.0, 5.0, 10.0) more likely exchange
                     is_round = (value_btc == int(value_btc)) and value_btc >= 1.0
                     if num_inputs == 1 and num_outputs >= 5:
-                        classification = 'BUY'  # Batch withdrawal pattern
+                        classification = 'BUY'
                     elif num_inputs >= 5 and num_outputs <= 2:
-                        classification = 'SELL'  # Consolidation → likely exchange deposit
+                        classification = 'SELL'
+                    elif num_outputs == 2 and value_btc >= 5.0:
+                        # 2-output pattern: likely 1 payment + 1 change address
+                        # Large value = whale movement, classify as BUY (accumulation)
+                        classification = 'BUY'
                     elif is_round and value_btc >= 10.0:
-                        classification = 'BUY'  # Round amounts suggest OTC/exchange
+                        classification = 'BUY'
                     else:
                         classification = 'TRANSFER'
 

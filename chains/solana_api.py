@@ -17,6 +17,7 @@ from config.settings import (
     shutdown_flag,
 )
 from data.tokens import SOL_TOKENS_TO_MONITOR, TOKEN_PRICES
+from data.addresses import solana_exchange_addresses as DATA_SOL_CEX, SOLANA_DEX_ADDRESSES as DATA_SOL_DEX
 from utils.base_helpers import safe_print
 from utils.alchemy_rpc import get_alchemy_rpc, _rpc_call
 
@@ -78,20 +79,21 @@ SOLANA_DEX_ADDRESSES = {
 
 
 def _classify_solana_transfer(from_addr, to_addr):
-    """Classify a Solana transfer using known exchange and DEX addresses."""
-    from_is_cex = from_addr in SOLANA_CEX_ADDRESSES
-    to_is_cex = to_addr in SOLANA_CEX_ADDRESSES
-    from_is_dex = from_addr in SOLANA_DEX_ADDRESSES
-    to_is_dex = to_addr in SOLANA_DEX_ADDRESSES
+    """Classify a Solana transfer using local + global exchange and DEX addresses."""
+    from_is_cex = from_addr in SOLANA_CEX_ADDRESSES or from_addr in DATA_SOL_CEX
+    to_is_cex = to_addr in SOLANA_CEX_ADDRESSES or to_addr in DATA_SOL_CEX
+    from_is_dex = from_addr in SOLANA_DEX_ADDRESSES or from_addr in DATA_SOL_DEX
+    to_is_dex = to_addr in SOLANA_DEX_ADDRESSES or to_addr in DATA_SOL_DEX
 
     if from_is_cex and not to_is_cex:
-        return 'BUY'    # Withdrawal from exchange
-    elif to_is_cex and not from_is_cex:
-        return 'SELL'   # Deposit to exchange
-    elif from_is_dex or to_is_dex:
-        return 'BUY' if from_is_dex else 'SELL'
-    else:
-        return 'TRANSFER'
+        return 'BUY'
+    if to_is_cex and not from_is_cex:
+        return 'SELL'
+    if from_is_dex and not to_is_dex:
+        return 'BUY'
+    if to_is_dex and not from_is_dex:
+        return 'SELL'
+    return 'TRANSFER'
 
 # All Solana tokens to track — includes stablecoins because they carry real volume on Solana
 TOP_SOLANA_TOKENS = [
