@@ -67,17 +67,29 @@ def _get_polygon_block_number() -> int | None:
 
 
 def _alchemy_fetch_transfers(from_hex: str, to_hex: str, contract_addresses: list) -> list | None:
-    """Fetch ERC-20 transfers via Alchemy alchemy_getAssetTransfers (single call for all tokens)."""
+    """Fetch ERC-20 transfers via Alchemy alchemy_getAssetTransfers.
+
+    Alchemy caps contractAddresses at ~5 per call, so we batch
+    if the list is longer and merge the results.
+    """
     try:
         from utils.alchemy_rpc import fetch_asset_transfers
-        transfers = fetch_asset_transfers(
-            blockchain='polygon',
-            from_block=from_hex,
-            to_block=to_hex,
-            contract_addresses=contract_addresses,
-            category=["erc20"],
-        )
-        return transfers
+        BATCH_SIZE = 5
+        all_results: list = []
+
+        for i in range(0, len(contract_addresses), BATCH_SIZE):
+            batch = contract_addresses[i : i + BATCH_SIZE]
+            transfers = fetch_asset_transfers(
+                blockchain='polygon',
+                from_block=from_hex,
+                to_block=to_hex,
+                contract_addresses=batch,
+                category=["erc20"],
+            )
+            if transfers:
+                all_results.extend(transfers)
+
+        return all_results if all_results else None
     except Exception as e:
         logger.warning(f"Alchemy Polygon transfers error: {e}")
         return None
@@ -250,7 +262,9 @@ def _classify_and_store(event: dict):
             pass
 
     event['classification'] = classification
-    handle_event(event)
+
+    if not handle_event(event):
+        return
 
     from config.settings import polygon_buy_counts, polygon_sell_counts
     if 'BUY' in classification:
@@ -261,11 +275,12 @@ def _classify_and_store(event: dict):
     current_time = time.strftime('%Y-%m-%d %H:%M:%S')
     safe_print(
         f"\n[POLYGON - {event['symbol']} | ${event['usd_value']:,.0f} USD] "
-        f"Block {event.get('block_num', '?')}"
+        f"{classification} | Block {event.get('block_num', '?')}"
     )
     safe_print(f"  Time : {current_time}")
     safe_print(f"  TX   : {event['tx_hash'][:24]}...")
-    safe_print(f"  Classification: {classification}")
+    safe_print(f"  From : {event.get('from', '?')[:24]}...")
+    safe_print(f"  To   : {event.get('to', '?')[:24]}...")
 
 
 def print_new_polygon_transfers():
@@ -319,11 +334,10 @@ def print_new_polygon_transfers():
 
             safe_print(f"  Polygon: scanning blocks {scan_from}-{tip} ({blocks_scanned} blocks)")
 
-            # Try Alchemy first (single call for all tokens)
+            # Try Alchemy first (batched calls for ERC-20 tokens)
             transfers = _alchemy_fetch_transfers(from_hex, to_hex, contract_addresses)
 
             if transfers is not None:
-                # Process Alchemy results
                 processed = 0
                 for tx in transfers:
                     event = _process_alchemy_transfer(tx, contract_map)
@@ -333,6 +347,8 @@ def print_new_polygon_transfers():
                         processed += 1
                 if processed > 0:
                     safe_print(f"  Polygon: {processed} ERC-20 whale tx in {blocks_scanned} blocks")
+                elif len(transfers) > 0:
+                    safe_print(f"  Polygon: {len(transfers)} ERC-20 txs found but none above threshold")
 
             # Also scan native MATIC transfers (external category)
             try:

@@ -4180,7 +4180,7 @@ class WhaleIntelligenceEngine:
                 })
             
             # USD value impact analysis
-            usd_value = transaction.get('amount_usd', transaction.get('value_usd', 0))
+            usd_value = transaction.get('amount_usd', transaction.get('usd_value', transaction.get('value_usd', 0)))
             if usd_value >= 1000000:  # $1M+
                 value_boost = 0.10
                 total_boost += value_boost
@@ -5001,10 +5001,11 @@ def process_and_enrich_transaction(event: Dict[str, Any]) -> Optional[Dict[str, 
         # Initialize transaction-aware structured logger
         tx_logger = get_transaction_logger(tx_hash, trace_id=f"monitor_{int(time.time())}")
         
+        _usd = event.get('estimated_usd', event.get('usd_value', event.get('value_usd', 0)))
         tx_logger.info(
             "Processing transaction in enhanced monitor",
             blockchain=event.get('blockchain', 'unknown'),
-            value_usd=event.get('estimated_usd', event.get('value_usd', 0)),
+            value_usd=_usd,
             symbol=event.get('symbol', 'unknown')
         )
         
@@ -5019,8 +5020,8 @@ def process_and_enrich_transaction(event: Dict[str, Any]) -> Optional[Dict[str, 
             'blockchain': event.get('blockchain', 'ethereum'),
             'from': event.get('from', event.get('from_address', '')),
             'to': event.get('to', event.get('to_address', '')),
-            'amount_usd': event.get('estimated_usd', event.get('value_usd', 0)),
-            'usd_value': event.get('estimated_usd', event.get('value_usd', 0)),
+            'amount_usd': _usd,
+            'usd_value': _usd,
             'token_symbol': event.get('symbol', ''),
             'block_number': event.get('block_number', 0),
             'timestamp': event.get('timestamp', int(time.time())),
