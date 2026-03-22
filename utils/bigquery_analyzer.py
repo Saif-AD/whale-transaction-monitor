@@ -40,22 +40,23 @@ class BigQueryAnalyzer:
 
     def _initialize_client(self) -> Optional[bigquery.Client]:
         try:
-            from google.oauth2 import service_account
             from config.api_keys import GOOGLE_APPLICATION_CREDENTIALS
             import os
 
-            if not GOOGLE_APPLICATION_CREDENTIALS or not os.path.exists(GOOGLE_APPLICATION_CREDENTIALS):
-                logger.warning(f"BigQuery credentials file not found: {GOOGLE_APPLICATION_CREDENTIALS}")
-                logger.info("BigQuery features will be disabled.")
-                return None
-
-            credentials = service_account.Credentials.from_service_account_file(
-                GOOGLE_APPLICATION_CREDENTIALS,
-                scopes=["https://www.googleapis.com/auth/cloud-platform"]
-            )
-
-            project_id = credentials.project_id or GCP_PROJECT_ID
-            client = bigquery.Client(credentials=credentials, project=project_id)
+            if GOOGLE_APPLICATION_CREDENTIALS and os.path.exists(GOOGLE_APPLICATION_CREDENTIALS):
+                from google.oauth2 import service_account
+                credentials = service_account.Credentials.from_service_account_file(
+                    GOOGLE_APPLICATION_CREDENTIALS,
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"]
+                )
+                project_id = credentials.project_id or GCP_PROJECT_ID
+                client = bigquery.Client(credentials=credentials, project=project_id)
+            else:
+                import google.auth
+                credentials, project = google.auth.default()
+                project_id = project or GCP_PROJECT_ID
+                client = bigquery.Client(credentials=credentials, project=project_id)
+                logger.info("Using Application Default Credentials for BigQuery")
 
             logger.info(f"BigQuery client initialized for project: {project_id}")
 

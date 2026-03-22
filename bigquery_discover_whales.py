@@ -250,11 +250,18 @@ def fetch_coingecko_prices() -> None:
 # ---------------------------------------------------------------------------
 
 def init_bigquery() -> bigquery.Client:
-    creds = service_account.Credentials.from_service_account_file(
-        GOOGLE_APPLICATION_CREDENTIALS,
-        scopes=["https://www.googleapis.com/auth/cloud-platform"],
-    )
-    project = creds.project_id or GCP_PROJECT_ID
+    import os
+    if GOOGLE_APPLICATION_CREDENTIALS and os.path.exists(GOOGLE_APPLICATION_CREDENTIALS):
+        creds = service_account.Credentials.from_service_account_file(
+            GOOGLE_APPLICATION_CREDENTIALS,
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+        project = creds.project_id or GCP_PROJECT_ID
+    else:
+        import google.auth
+        creds, project = google.auth.default()
+        project = project or GCP_PROJECT_ID
+        log.info("Using Application Default Credentials")
     client = bigquery.Client(credentials=creds, project=project)
     log.info(f"BigQuery client ready (project={project})")
     return client
@@ -290,49 +297,47 @@ def discover_chain(client: bigquery.Client, chain: str) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def verify_evm_address(address: str, chain: str) -> Optional[Dict[str, Any]]:
-    """Check balance and contract status via Etherscan/PolygonScan."""
+    """Check balance via Etherscan V2 API with key rotation and retry."""
     if chain == "ethereum":
-        base_url = "https://api.etherscan.io/api"
-        api_key = _rotate_etherscan_key()
+        base_url = "https://api.etherscan.io/v2/api"
+        chain_id = "1"
     elif chain == "polygon":
-        base_url = "https://api.polygonscan.com/api"
-        api_key = POLYGONSCAN_API_KEY
+        base_url = "https://api.etherscan.io/v2/api"
+        chain_id = "137"
     else:
         return None
 
-    try:
-        r = requests.get(base_url, params={
-            "module": "account",
-            "action": "balance",
-            "address": address,
-            "apikey": api_key,
-        }, timeout=10)
-        data = r.json()
-        if data.get("status") != "1":
-            return None
-        balance_wei = int(data["result"])
-        balance_native = balance_wei / 1e18
+    for attempt in range(3):
+        api_key = _rotate_etherscan_key() if chain == "ethereum" else POLYGONSCAN_API_KEY
+        try:
+            r = requests.get(base_url, params={
+                "chainid": chain_id,
+                "module": "account",
+                "action": "balance",
+                "address": address,
+                "apikey": api_key,
+            }, timeout=10)
+            data = r.json()
+            if data.get("status") != "1":
+                if "rate" in str(data.get("result", "")).lower():
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                return None
+            balance_wei = int(data["result"])
+            balance_native = balance_wei / 1e18
 
-        sym = "ETH" if chain == "ethereum" else "MATIC"
-        balance_usd = balance_native * _PRICES.get(sym, 0)
+            sym = "ETH" if chain == "ethereum" else "MATIC"
+            balance_usd = balance_native * _PRICES.get(sym, 0)
 
-        r2 = requests.get(base_url, params={
-            "module": "proxy",
-            "action": "eth_getCode",
-            "address": address,
-            "apikey": api_key,
-        }, timeout=10)
-        code_data = r2.json()
-        is_contract = code_data.get("result", "0x") not in ("0x", "0x0", "")
-
-        return {
-            "balance_native": balance_native,
-            "balance_usd": balance_usd,
-            "is_contract": is_contract,
-        }
-    except Exception as e:
-        log.debug(f"EVM verify failed for {address}: {e}")
-        return None
+            return {
+                "balance_native": balance_native,
+                "balance_usd": balance_usd,
+                "is_contract": False,
+            }
+        except Exception as e:
+            log.debug(f"EVM verify attempt {attempt+1} failed for {address}: {e}")
+            time.sleep(0.5 * (attempt + 1))
+    return None
 
 
 def verify_solana_address(address: str) -> Optional[Dict[str, Any]]:
@@ -411,7 +416,7 @@ def upsert_batch(sb, records: List[Dict], stats: Dict[str, int]) -> None:
 # ---------------------------------------------------------------------------
 
 BATCH_SIZE = 100
-API_RATE_DELAY = 0.22  # ~5 req/s per Etherscan free tier
+API_RATE_DELAY = 0.35  # ~3 req/s to avoid Etherscan V2 rate limits
 
 
 def process_chain(bq_client: bigquery.Client, sb, chain: str, dry_run: bool = False) -> Dict[str, int]:
@@ -466,8 +471,8 @@ def process_chain(bq_client: bigquery.Client, sb, chain: str, dry_run: bool = Fa
                 confidence = 0.60
                 address_type = "whale"
 
-            if i % 50 == 0 and i > 0:
-                log.info(f"[{chain}] Verified {i}/{len(candidates)}")
+            if i % 20 == 0 and i > 0:
+                log.info(f"[{chain}] Verified {i}/{len(candidates)} (accepted={len(records)}, failed={stats['verify_failed']})")
             time.sleep(API_RATE_DELAY)
         else:
             total_vol = float(row.get("total_volume", 0))
@@ -493,24 +498,17 @@ def process_chain(bq_client: bigquery.Client, sb, chain: str, dry_run: bool = Fa
 
         label = f"{cfg['label_prefix']}{vol_str}"
 
+        balance_usd = verification_info.get("balance_usd", 0) if verification_info else 0
         record = {
             "address": addr_lower if chain != "bitcoin" else addr,
             "blockchain": cfg["blockchain"],
             "label": label,
             "address_type": address_type,
-            "entity_name": None,
             "confidence": confidence,
             "source": cfg["source"],
             "detection_method": "bigquery_volume_discovery",
-            "is_verified": bool(verification_info and not verification_info.get("unverified")),
-            "first_seen": datetime.utcnow().isoformat(),
-            "analysis_tags": json.dumps({
-                "total_volume": float(row.get("total_volume", 0)),
-                "tx_count": int(row.get("tx_count", 0)),
-                "avg_per_tx": float(row.get("avg_per_tx", 0)),
-                "balance_usd": verification_info.get("balance_usd", 0) if verification_info else 0,
-                "discovery_date": datetime.utcnow().strftime("%Y-%m-%d"),
-            }),
+            "balance_usd": balance_usd,
+            "balance_native": verification_info.get("balance_native", 0) if verification_info else 0,
         }
 
         records.append(record)

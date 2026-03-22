@@ -83,24 +83,25 @@ def on_xrp_message(ws, message):
             if amount_xrp > 100_000_000:
                 return
 
-            # Filter Ripple Labs treasury/escrow mega-transfers (>$1B)
+            # Filter Ripple Labs treasury/escrow transfers
             RIPPLE_TREASURY = {
                 'rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh',  # Genesis
                 'rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe',  # Escrow release
                 'r3kmLJN5D28dHuH8vZNUZpMC43pEHpaocV',  # Ripple OPS
                 'rHWcuuZoFvDS6gNbmHSdpb7u1hZzxvCoMt',  # Ripple distribution
                 'rwSJF4TNLjyfbVCBh3YsBXUUfeMD8AG5g7',  # Ripple
+                'rDsbeomae4FXwgQTJp9Rs64Qg9vDiTCdBv',  # Ripple escrow
+                'rN7v3dSiDhKKPBBLFMLbfcSBfGjXY5CTVY',  # Ripple OPS 2
             }
             if from_addr in RIPPLE_TREASURY or to_addr in RIPPLE_TREASURY:
-                if usd_value > 1_000_000_000:  # >$1B likely escrow movement
-                    return  # Skip Ripple treasury mega-transfers
+                if usd_value > 50_000_000:
+                    return
 
             # Multi-signal XRP classification
             from_is_exchange = from_addr in xrp_exchange_addresses
             to_is_exchange = to_addr in xrp_exchange_addresses
             has_dest_tag = "DestinationTag" in txn
 
-            # Known payment channel / AMM addresses on XRPL
             XRPL_AMM_INDICATORS = {"AMMDeposit", "AMMWithdraw", "AMMCreate", "AMMBid", "AMMVote"}
 
             if tx_type in XRPL_AMM_INDICATORS:
@@ -115,13 +116,16 @@ def on_xrp_message(ws, message):
             elif from_is_exchange and to_is_exchange:
                 classification = "TRANSFER"
             elif has_dest_tag and not from_is_exchange:
-                classification = "SELL"
-            elif not has_dest_tag and to_is_exchange:
+                # DestinationTag is a strong SELL signal: exchanges require tags
+                # for deposit identification — this is almost certainly an exchange deposit
                 classification = "SELL"
             elif not has_dest_tag and not from_is_exchange and not to_is_exchange:
-                if usd_value >= 100_000:
-                    # Large XRP payment without DestinationTag between wallets
-                    # = likely OTC/institutional movement — signal as BUY (accumulation)
+                # No exchange, no tag — check for OTC / institutional patterns
+                is_round = (amount_xrp >= 10_000 and
+                            (amount_xrp == int(amount_xrp) or amount_xrp % 1000 == 0))
+                if usd_value >= 500_000 and is_round:
+                    classification = "OTC_TRANSFER"
+                elif usd_value >= 100_000:
                     classification = "BUY"
                 elif usd_value >= 50_000:
                     classification = "BUY"
@@ -149,8 +153,7 @@ def on_xrp_message(ws, message):
                 record_transfer("XRP", amount_xrp, txn.get("Account", ""),
                     txn.get("Destination", ""), tx_hash)
 
-            # Update buy/sell counters (dict-style, same as all other chains)
-            if classification in ("BUY", "MODERATE_BUY", "VERIFIED_SWAP_BUY"):
+            if classification in ("BUY", "MODERATE_BUY", "VERIFIED_SWAP_BUY", "OTC_TRANSFER"):
                 _settings.xrp_buy_counts['XRP'] += 1
             elif classification in ("SELL", "MODERATE_SELL", "VERIFIED_SWAP_SELL"):
                 _settings.xrp_sell_counts['XRP'] += 1

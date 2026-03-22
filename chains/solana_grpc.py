@@ -29,9 +29,13 @@ from config.settings import (
     print_lock,
 )
 from data.tokens import SOL_TOKENS_TO_MONITOR, TOKEN_PRICES
+from data.addresses import SOLANA_DEX_ADDRESSES
+from chains.solana_api import SOLANA_CEX_ADDRESSES
 from utils.classification_final import enhanced_solana_classification
 from utils.base_helpers import safe_print, log_error
 from utils.dedup import handle_event
+
+_SOLANA_POOL_ADDRS = set(SOLANA_DEX_ADDRESSES) | SOLANA_CEX_ADDRESSES
 
 # --- Configuration ---
 GRPC_ENDPOINT = "solana-mainnet.g.alchemy.com"
@@ -95,8 +99,9 @@ def _build_channel():
 def _build_subscribe_request():
     """Build a SubscribeRequest that filters for transactions involving our monitored mints.
 
-    Uses the transactions filter with account_include set to our SPL token mint addresses.
-    This catches any transaction that touches these mint accounts (transfers, swaps, etc).
+    Uses account_include with mint addresses. Alchemy blocks SPL Token Program IDs
+    as too broad, so we filter by specific mint accounts and rely on the fact that
+    token balance changes reference mint accounts in pre/post token balances.
     """
     request = geyser_pb2.SubscribeRequest(
         transactions={
@@ -149,6 +154,16 @@ def _process_transaction_update(update):
     for addr in tx_meta.loaded_readonly_addresses:
         account_keys.append(_bytes_to_base58(addr))
 
+    # Extract program IDs from instructions for classification
+    program_ids = set()
+    for ix in tx_msg.message.instructions:
+        if ix.program_id_index < len(account_keys):
+            program_ids.add(account_keys[ix.program_id_index])
+    for inner_ixs in tx_meta.inner_instructions:
+        for ix in inner_ixs.instructions:
+            if ix.program_id_index < len(account_keys):
+                program_ids.add(account_keys[ix.program_id_index])
+
     # Build pre/post token balance maps: {account_index: TokenBalance}
     pre_balances = {}
     for tb in tx_meta.pre_token_balances:
@@ -161,11 +176,13 @@ def _process_transaction_update(update):
     # Find all account indices with token balance changes
     all_indices = set(pre_balances.keys()) | set(post_balances.keys())
 
+    # Phase 1: Collect all balance-change candidates per (tx_sig, symbol)
+    candidates = defaultdict(list)  # (tx_sig, symbol) -> list of candidate dicts
+
     for idx in all_indices:
         pre = pre_balances.get(idx)
         post = post_balances.get(idx)
 
-        # Determine the mint
         mint = None
         if post and post.mint:
             mint = post.mint
@@ -177,7 +194,6 @@ def _process_transaction_update(update):
 
         symbol = MINT_TO_SYMBOL[mint]
 
-        # Get amounts
         pre_amount = pre.ui_token_amount.ui_amount if pre else 0.0
         post_amount = post.ui_token_amount.ui_amount if post else 0.0
 
@@ -185,7 +201,6 @@ def _process_transaction_update(update):
         if abs(amount_change) < 0.0001:
             continue
 
-        # Get owner
         owner = ""
         if post and post.owner:
             owner = post.owner
@@ -195,7 +210,6 @@ def _process_transaction_update(update):
         if not owner:
             continue
 
-        # Calculate USD value and apply per-token threshold
         price = TOKEN_PRICES.get(symbol, 0)
         usd_value = abs(amount_change) * price
         min_threshold = MINT_THRESHOLD.get(mint, 1_000)
@@ -203,44 +217,78 @@ def _process_transaction_update(update):
         if usd_value < min_threshold:
             continue
 
+        candidates[(tx_sig, symbol)].append({
+            "owner": owner,
+            "amount_change": amount_change,
+            "usd_value": usd_value,
+            "mint": mint,
+            "post_amount": post_amount,
+        })
+
+    # Phase 2: For each (tx, symbol) pick ONE event — the whale side, not the pool
+    for (sig, symbol), cands in candidates.items():
+        if len(cands) == 1:
+            chosen = cands[0]
+        else:
+            non_pool = [c for c in cands if c["owner"] not in _SOLANA_POOL_ADDRS]
+            if non_pool:
+                chosen = max(non_pool, key=lambda c: c["usd_value"])
+            else:
+                chosen = max(cands, key=lambda c: c["usd_value"])
+
+        owner = chosen["owner"]
+        amount_change = chosen["amount_change"]
+        usd_value = chosen["usd_value"]
+        mint = chosen["mint"]
+        post_amount = chosen["post_amount"]
+
         _stats["whale_transfers_found"] += 1
 
-        # Determine from/to based on balance change direction
         prev_owner = None
         if owner in solana_previous_balances:
             prev_owner = solana_previous_balances.get(owner, {}).get("last_counterparty")
 
-        # Build event matching the existing Solana monitor format
-        unique_id = f"{tx_sig}_{owner}_{amount_change:.6f}"
+        # For from/to, find the counterparty from the other side of the transfer
+        counterparty = "unknown"
+        for c in cands:
+            if c["owner"] != owner:
+                counterparty = c["owner"]
+                break
+
+        if amount_change > 0:
+            from_addr = counterparty
+            to_addr = owner
+        else:
+            from_addr = owner
+            to_addr = counterparty
+
         event = {
             "blockchain": "solana",
-            "tx_hash": unique_id,
-            "original_hash": tx_sig,
-            "from": prev_owner or "unknown",
-            "to": owner,
-            "amount": abs(amount_change),
+            "tx_hash": f"{sig}_{owner}_{amount_change:.6f}",
+            "original_hash": sig,
+            "from": from_addr,
+            "to": to_addr,
+            "amount": float(abs(amount_change)),
             "symbol": symbol,
             "usd_value": usd_value,
             "timestamp": time.time(),
             "source": "solana_grpc",
         }
 
-        # Classify before dedup
         classification, confidence = enhanced_solana_classification(
             owner=owner,
             prev_owner=prev_owner,
             amount_change=amount_change,
-            tx_hash=tx_sig,
+            tx_hash=sig,
             token=symbol,
             source="solana_grpc",
+            program_ids=program_ids,
         )
         event["classification"] = classification
 
-        # Dedup check
         if not handle_event(event):
             continue
 
-        # Update buy/sell counts
         if confidence >= 2:
             if classification == "buy":
                 solana_buy_counts[symbol] += 1
@@ -250,11 +298,12 @@ def _process_transaction_update(update):
             current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
             safe_print(f"\n[{symbol} | ${usd_value:,.2f} USD] Solana gRPC {classification.upper()}")
             safe_print(f"  Time: {current_time}")
-            safe_print(f"  TX: {tx_sig[:16]}...")
+            safe_print(f"  TX: {sig[:16]}...")
+            safe_print(f"  From: {from_addr}")
+            safe_print(f"  To:   {to_addr}")
             safe_print(f"  Amount: {abs(amount_change):,.2f} {symbol}")
             safe_print(f"  Classification: {classification} (confidence: {confidence})")
 
-        # Persist to Supabase
         if confidence >= 2:
             try:
                 from utils.supabase_writer import store_transaction
@@ -269,7 +318,6 @@ def _process_transaction_update(update):
             except Exception:
                 pass
 
-        # Update balance tracking
         if owner not in solana_previous_balances:
             solana_previous_balances[owner] = {}
         solana_previous_balances[owner][mint] = post_amount

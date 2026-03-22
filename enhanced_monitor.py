@@ -1142,7 +1142,9 @@ class TransactionStorage:
                 'counterparty_type': counterparty_type,
                 'is_cex_transaction': is_cex_transaction,
                 'from_label': from_label,
-                'to_label': to_label
+                'to_label': to_label,
+                'from_entity': from_entity,
+                'to_entity': to_entity,
             }
             
         except Exception as e:
@@ -1155,7 +1157,9 @@ class TransactionStorage:
                 'counterparty_type': 'EOA',
                 'is_cex_transaction': False,
                 'from_label': '',
-                'to_label': ''
+                'to_label': '',
+                'from_entity': '',
+                'to_entity': '',
             }
     
     def store_whale_transaction(self, tx_data: dict, intelligence_result: dict) -> bool:

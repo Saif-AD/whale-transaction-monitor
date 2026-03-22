@@ -11,7 +11,8 @@ CU budget: ~700 CU/hour (extremely efficient — Bitcoin produces ~6 blocks/hr).
 
 import time
 import logging
-from typing import Optional
+import requests
+from typing import Optional, Dict, List
 
 from config.settings import shutdown_flag, GLOBAL_USD_THRESHOLD
 from data.tokens import TOKEN_PRICES
@@ -23,6 +24,43 @@ from utils.alchemy_rpc import (
 )
 
 logger = logging.getLogger(__name__)
+
+_enriched_tx_cache: Dict[str, List[str]] = {}
+
+
+def _resolve_input_addresses(tx_hash: str, vin: list) -> List[str]:
+    """Resolve input addresses via mempool.space since Alchemy omits prevout.
+    Returns list of input addresses (may contain empty strings for unresolvable inputs).
+    Results are cached per tx_hash within a block processing cycle."""
+    if tx_hash in _enriched_tx_cache:
+        return _enriched_tx_cache[tx_hash]
+
+    addrs = []
+    # First try: does Alchemy's data already have prevout? (future-proofing)
+    for v in vin:
+        a = v.get("prevout", {}).get("scriptPubKey", {}).get("address", "")
+        if a:
+            addrs.append(a)
+    if addrs:
+        _enriched_tx_cache[tx_hash] = addrs
+        return addrs
+
+    # Fallback: fetch from mempool.space
+    try:
+        resp = requests.get(
+            f"https://mempool.space/api/tx/{tx_hash}",
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            for inp in data.get("vin", []):
+                prev = inp.get("prevout", {})
+                addrs.append(prev.get("scriptpubkey_address", ""))
+    except Exception:
+        pass
+
+    _enriched_tx_cache[tx_hash] = addrs
+    return addrs
 
 _last_seen_height: Optional[int] = None
 
@@ -321,31 +359,149 @@ def _btc_price() -> float:
     return TOKEN_PRICES.get("WBTC", TOKEN_PRICES.get("BTC", 65_000))
 
 
+def _classify_bitcoin_utxo(from_addr, to_addr, value_btc, vin, vout,
+                            num_inputs, num_outputs):
+    """UTXO-aware Bitcoin classification engine.
+
+    `to_addr` is the specific output being classified (one call per qualifying output).
+    `from_addr` is the first resolved input address.
+    """
+    # --- Collect addresses from ALL inputs/outputs ---
+    input_addrs = []
+    for v in vin:
+        a = v.get("prevout", {}).get("scriptPubKey", {}).get("address", "")
+        if a:
+            input_addrs.append(a)
+
+    input_set = set(input_addrs)
+
+    output_addrs = []
+    output_values = []
+    for o in vout:
+        spk = o.get("scriptPubKey", {})
+        a = spk.get("address") or (spk.get("addresses", [None]) or [None])[0] or ""
+        output_addrs.append(a)
+        output_values.append(o.get("value", 0))
+
+    any_input_exchange = any(a in BTC_EXCHANGE_ADDRESSES for a in input_addrs)
+    to_is_exchange = to_addr in BTC_EXCHANGE_ADDRESSES
+
+    # 0. Self-transfer: output goes back to an input address (change output)
+    if to_addr and to_addr in input_set:
+        if to_is_exchange and any_input_exchange:
+            return "TRANSFER"
+        if to_is_exchange:
+            return "TRANSFER"
+        return "TRANSFER"
+
+    # 1. Coinbase (mining reward)
+    is_coinbase = (not input_addrs and vin and vin[0].get("coinbase")) or from_addr == "coinbase"
+    if is_coinbase:
+        return "MINING_REWARD"
+
+    # 2. Exchange flow — the #1 signal
+    # Check if any input is from an exchange (withdrawal → BUY)
+    if any_input_exchange and not to_is_exchange:
+        return "BUY"
+    # Check if output goes to exchange from non-exchange inputs (deposit → SELL)
+    if to_is_exchange and not any_input_exchange:
+        return "SELL"
+    # Both sides exchange → internal transfer
+    if to_is_exchange and any_input_exchange:
+        return "TRANSFER"
+
+    # 3. Consolidation: many inputs -> 1-2 outputs
+    if num_inputs >= 5 and num_outputs <= 2:
+        return "CONSOLIDATION"
+
+    # 4. Distribution: 1-2 inputs -> many outputs
+    if num_inputs <= 2 and num_outputs >= 5:
+        return "DISTRIBUTION"
+
+    # 5. CoinJoin / mixing: 3+ inputs AND 3+ outputs with repeated equal amounts
+    if num_inputs >= 3 and num_outputs >= 3:
+        rounded = [round(v, 4) for v in output_values if v > 0]
+        from collections import Counter
+        counts = Counter(rounded)
+        most_common_count = counts.most_common(1)[0][1] if counts else 0
+        if most_common_count >= 3:
+            return "MIXING"
+
+    # 6. Change-address heuristic for 2-output txs
+    # Only classify as BUY if THIS output is the non-change one
+    if num_outputs == 2 and input_addrs:
+        for addr in output_addrs:
+            if addr in input_set and addr != to_addr:
+                return "BUY"
+
+    # 7. Round-amount heuristic — large round BTC likely OTC or accumulation
+    is_round = value_btc >= 1.0 and (value_btc == int(value_btc) or value_btc % 0.5 == 0)
+    if is_round and value_btc >= 5.0:
+        return "BUY"
+
+    return "TRANSFER"
+
+
+BTC_USD_THRESHOLD = 50_000  # $50K minimum for BTC whale outputs
+MAX_BTC_OUTPUTS_PER_BLOCK = 15
+
+
 def _process_block(block: dict) -> int:
     """Parse a decoded Bitcoin block for large-value outputs.  Returns count of qualifying txs."""
+    global _enriched_tx_cache
+    _enriched_tx_cache = {}  # Clear per-block cache
+
     btc_usd = _btc_price()
-    threshold_btc = 200_000 / btc_usd  # $200K threshold for Bitcoin
+    threshold_btc = BTC_USD_THRESHOLD / btc_usd
     block_height = block.get("height", "?")
     txs = block.get("tx", [])
     found = 0
 
-    safe_print(f"  Bitcoin block {block_height}: scanning {len(txs)} txs (threshold: {threshold_btc:.4f} BTC = ${GLOBAL_USD_THRESHOLD:,.0f})")
+    # Phase 1: identify qualifying tx hashes (outputs > threshold)
+    qualifying_txids = set()
+    for tx in txs:
+        vin = tx.get("vin", [])
+        if vin and vin[0].get("coinbase"):
+            continue
+        for out in tx.get("vout", []):
+            if out.get("value", 0) >= threshold_btc:
+                qualifying_txids.add(tx.get("txid", ""))
+                break
 
+    # Phase 2: process qualifying transactions
     for tx in txs:
         tx_hash = tx.get("txid", "")
+        if tx_hash not in qualifying_txids:
+            continue
+
         vout = tx.get("vout", [])
         vin = tx.get("vin", [])
-
-        # Bitcoin heuristic: count inputs and outputs for pattern detection
         num_inputs = len(vin)
         num_outputs = len(vout)
+
+        is_coinbase_tx = vin and vin[0].get("coinbase")
+        if is_coinbase_tx:
+            continue
+
+        # Resolve input addresses (mempool.space fallback for prevout)
+        input_addrs = _resolve_input_addresses(tx_hash, vin)
+        from_addr = input_addrs[0] if input_addrs else ""
+        input_set = set(input_addrs)
+
+        # Build enriched vin for classifier (inject resolved addresses)
+        enriched_vin = []
+        for i, v in enumerate(vin):
+            addr = input_addrs[i] if i < len(input_addrs) else ""
+            enriched_vin.append({
+                **v,
+                "prevout": {"scriptPubKey": {"address": addr}},
+            })
 
         for out_idx, out in enumerate(vout):
             value_btc = out.get("value", 0)
             if value_btc < threshold_btc:
                 continue
 
-            usd_value = value_btc * btc_usd
             spk = out.get("scriptPubKey", {})
             to_addr = ""
             if spk.get("address"):
@@ -353,11 +509,44 @@ def _process_block(block: dict) -> int:
             elif spk.get("addresses"):
                 to_addr = spk["addresses"][0]
 
-            from_addr = ""
-            if vin and vin[0].get("prevout", {}).get("scriptPubKey", {}).get("address"):
-                from_addr = vin[0]["prevout"]["scriptPubKey"]["address"]
+            # Skip change outputs — BTC returning to the sender
+            if to_addr and to_addr in input_set:
+                continue
+
+            usd_value = value_btc * btc_usd
+
+            # Classify BEFORE printing so we can filter noise
+            try:
+                classification = _classify_bitcoin_utxo(
+                    from_addr, to_addr, value_btc,
+                    enriched_vin, vout,
+                    num_inputs, num_outputs
+                )
+            except Exception as e:
+                logger.warning(f"Bitcoin classify error: {e}")
+                classification = "TRANSFER"
+
+            event = {
+                "blockchain": "bitcoin",
+                "tx_hash": tx_hash,
+                "from": from_addr,
+                "to": to_addr,
+                "amount": value_btc,
+                "symbol": "BTC",
+                "usd_value": usd_value,
+                "timestamp": block.get("time", time.time()),
+                "source": "bitcoin_alchemy",
+                "classification": classification,
+            }
+
+            from utils.dedup import handle_event
+            if not handle_event(event):
+                continue
 
             found += 1
+            if found > MAX_BTC_OUTPUTS_PER_BLOCK:
+                continue
+
             current_time = time.strftime('%Y-%m-%d %H:%M:%S')
             safe_print(
                 f"\n[BITCOIN | {value_btc:,.4f} BTC | ${usd_value:,.0f} USD] "
@@ -365,87 +554,18 @@ def _process_block(block: dict) -> int:
             )
             safe_print(f"  Time : {current_time}")
             safe_print(f"  TX   : {tx_hash[:24]}...")
-            safe_print(f"  From : {from_addr or 'coinbase'}")
+            safe_print(f"  From : {from_addr or 'unknown'}")
             safe_print(f"  To   : {to_addr}")
+            safe_print(f"  Class: {classification}")
 
             try:
-                event = {
-                    "blockchain": "bitcoin",
-                    "tx_hash": tx_hash,
-                    "from": from_addr or "coinbase",
-                    "to": to_addr,
-                    "amount": value_btc,
-                    "symbol": "BTC",
-                    "usd_value": usd_value,
-                    "timestamp": block.get("time", time.time()),
-                    "source": "bitcoin_alchemy",
-                }
-
-                # Multi-signal Bitcoin classification
-                from_is_exchange = from_addr in BTC_EXCHANGE_ADDRESSES
-                to_is_exchange = to_addr in BTC_EXCHANGE_ADDRESSES
-
-                # Check ALL outputs for exchange involvement (not just this output)
-                any_output_exchange = False
-                any_output_non_exchange = False
-                for o in vout:
-                    o_spk = o.get("scriptPubKey", {})
-                    o_addr = o_spk.get("address") or (o_spk.get("addresses", [None]) or [None])[0]
-                    if o_addr and o_addr in BTC_EXCHANGE_ADDRESSES:
-                        any_output_exchange = True
-                    elif o_addr:
-                        any_output_non_exchange = True
-
-                # Check ALL inputs for exchange involvement
-                any_input_exchange = False
-                for v in vin:
-                    v_addr = v.get("prevout", {}).get("scriptPubKey", {}).get("address", "")
-                    if v_addr and v_addr in BTC_EXCHANGE_ADDRESSES:
-                        any_input_exchange = True
-                        break
-
-                if from_is_exchange and not to_is_exchange:
-                    classification = 'BUY'
-                elif to_is_exchange and not from_is_exchange:
-                    classification = 'SELL'
-                elif from_is_exchange and to_is_exchange:
-                    classification = 'TRANSFER'
-                elif from_addr == 'coinbase':
-                    classification = 'TRANSFER'
-                elif any_input_exchange and not any_output_exchange:
-                    classification = 'BUY'
-                elif any_output_exchange and not any_input_exchange:
-                    classification = 'SELL'
-                else:
-                    is_round = (value_btc == int(value_btc)) and value_btc >= 1.0
-                    if num_inputs == 1 and num_outputs >= 5:
-                        classification = 'BUY'
-                    elif num_inputs >= 5 and num_outputs <= 2:
-                        classification = 'SELL'
-                    elif num_outputs == 2 and value_btc >= 5.0:
-                        # 2-output pattern: likely 1 payment + 1 change address
-                        # Large value = whale movement, classify as BUY (accumulation)
-                        classification = 'BUY'
-                    elif is_round and value_btc >= 10.0:
-                        classification = 'BUY'
-                    else:
-                        classification = 'TRANSFER'
-
-                event['classification'] = classification
-
-                # Update buy/sell counters
                 from config.settings import bitcoin_buy_counts, bitcoin_sell_counts
-                if classification == 'BUY':
+                if classification in ('BUY', 'MINING_REWARD'):
                     bitcoin_buy_counts['BTC'] += 1
-                elif classification == 'SELL':
+                elif classification in ('SELL',):
                     bitcoin_sell_counts['BTC'] += 1
-
-                # Route through dedup for in-memory dashboard + Supabase persistence
-                from utils.dedup import handle_event
-                handle_event(event)
-
             except Exception as e:
-                logger.warning(f"Bitcoin event error: {e}")
+                logger.warning(f"Bitcoin counter error: {e}")
 
     return found
 
@@ -491,11 +611,13 @@ def poll_bitcoin_blocks():
                     continue
                 found = _process_block(block)
                 if found:
-                    safe_print(f"  Bitcoin block {h}: {found} whale transaction(s)")
+                    shown = min(found, MAX_BTC_OUTPUTS_PER_BLOCK)
+                    safe_print(f"  Bitcoin block {h}: {shown}/{found} whale outputs shown (>=${BTC_USD_THRESHOLD/1000:.0f}K)")
 
             _last_seen_height = current_height
 
         except Exception as e:
+            safe_print(f"⚠️  Bitcoin poll error: {e}")
             logger.warning(f"Bitcoin poll error: {e}")
 
         shutdown_flag.wait(timeout=POLL_INTERVAL)

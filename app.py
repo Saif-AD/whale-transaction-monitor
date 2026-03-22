@@ -83,7 +83,16 @@ def get_transactions():
     
     # Sort by timestamp (newest first)
     filtered_txs.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
-    
+
+    _refresh_entity_cache()
+    for tx in filtered_txs:
+        fa = (tx.get('from', tx.get('from_address', '')) or '').lower()
+        ta = (tx.get('to', tx.get('to_address', '')) or '').lower()
+        if fa in _entity_cache:
+            tx['from_entity'] = _entity_cache[fa]
+        if ta in _entity_cache:
+            tx['to_entity'] = _entity_cache[ta]
+
     return jsonify(filtered_txs)
 
 # API route to get statistics
@@ -204,8 +213,33 @@ def get_stats():
         }
     })
 
+_entity_cache = {}
+_entity_cache_ts = 0
+_ENTITY_CACHE_TTL = 300  # refresh every 5 min
+
+def _refresh_entity_cache():
+    global _entity_cache, _entity_cache_ts
+    if time.time() - _entity_cache_ts < _ENTITY_CACHE_TTL:
+        return
+    try:
+        from config.api_keys import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+        from supabase import create_client
+        sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        rows = sb.table('addresses').select('address,entity_name').not_.is_('entity_name', 'null').limit(5000).execute().data
+        _entity_cache.update({r['address'].lower(): r['entity_name'] for r in rows if r.get('entity_name')})
+        _entity_cache_ts = time.time()
+    except Exception:
+        pass
+
 def push_new_transaction(event):
-    """Push a new transaction to all connected clients via SocketIO"""
+    """Push a new transaction to all connected clients via SocketIO, enriched with entity names."""
+    _refresh_entity_cache()
+    from_addr = (event.get('from', event.get('from_address', '')) or '').lower()
+    to_addr = (event.get('to', event.get('to_address', '')) or '').lower()
+    if from_addr in _entity_cache:
+        event['from_entity'] = _entity_cache[from_addr]
+    if to_addr in _entity_cache:
+        event['to_entity'] = _entity_cache[to_addr]
     socketio.emit('new_transaction', event)
 
 def start_monitors():
@@ -253,6 +287,10 @@ def start_monitors():
     btc_thread.start()
     threads.append(btc_thread)
 
+    # Start Solana API block poller (most reliable Solana source)
+    solana_api_thread = threading.Thread(target=print_new_solana_transfers, daemon=True, name="Solana-API")
+    solana_api_thread.start()
+    threads.append(solana_api_thread)
 
     return threads
 

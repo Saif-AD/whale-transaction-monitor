@@ -314,7 +314,7 @@ def fetch_solana_token_transfers():
                     'to': owner if diff > 0 else '',
                     'owner': owner,
                     'symbol': symbol,
-                    'amount': str(abs(diff)),
+                    'amount': float(abs(diff)),
                     'tx_hash': tx_sig,
                     'timestamp': block_time,
                     'decimals': decimals,
@@ -388,15 +388,15 @@ def print_new_solana_transfers():
                     price = TOKEN_PRICES.get(symbol, 0)
                     estimated_usd = token_amount * price
 
-                    solana_threshold = 500  # $500 for Solana volatile tokens
-                    if estimated_usd < solana_threshold:
+                    token_min = SOL_TOKENS_TO_MONITOR.get(symbol, {}).get("min_threshold", GLOBAL_USD_THRESHOLD)
+                    effective_threshold = max(token_min, GLOBAL_USD_THRESHOLD)
+                    if estimated_usd < effective_threshold:
                         continue
 
                     from_addr = event["from"]
                     to_addr = event["to"]
                     tx_hash = event["tx_hash"]
 
-                    # Solana-specific classification
                     classification = _classify_solana_transfer(from_addr, to_addr)
 
                     from utils.dedup import handle_event
@@ -406,7 +406,8 @@ def print_new_solana_transfers():
                         'source': 'solana_alchemy'
                     })
 
-                    handle_event(event)
+                    if not handle_event(event):
+                        continue
 
                     from config.settings import solana_api_buy_counts, solana_api_sell_counts
                     if 'BUY' in classification:
@@ -414,7 +415,11 @@ def print_new_solana_transfers():
                     elif 'SELL' in classification:
                         solana_api_sell_counts[symbol] += 1
 
+                    current_time = time.strftime('%Y-%m-%d %H:%M:%S')
                     safe_print(f"\n[SOLANA - {symbol} | ${estimated_usd:,.2f} USD] Tx {tx_hash[:24]}...")
+                    safe_print(f"  Time: {current_time}")
+                    safe_print(f"  From: {from_addr[:16]}..." if from_addr else "  From: unknown")
+                    safe_print(f"  To:   {to_addr[:16]}..." if to_addr else "  To:   unknown")
                     safe_print(f"  Amount: {token_amount:,.6f} {symbol} (~${estimated_usd:,.2f} USD)")
                     safe_print(f"  Classification: {classification}")
 

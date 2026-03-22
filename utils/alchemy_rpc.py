@@ -21,8 +21,11 @@ from config.api_keys import (
     ALCHEMY_TRON_RPC,
     HELIUS_RPC_URL,
 )
+from utils.base_helpers import safe_print
 
 logger = logging.getLogger(__name__)
+
+_chain_error_printed = set()
 
 RECEIPT_USD_THRESHOLD = 50_000
 
@@ -128,10 +131,18 @@ def _rpc_call(rpc_url: str, method: str, params: list, timeout: int = 10, cu_cos
                         logger.warning(f"Alchemy capacity error ({method}), retrying in {wait}s")
                         time.sleep(wait)
                         continue
+                    err_key = f"{rpc_url[:30]}:{method}"
+                    if err_key not in _chain_error_printed:
+                        _chain_error_printed.add(err_key)
+                        safe_print(f"⚠️  Alchemy RPC error ({method}): {err}")
                     logger.warning(f"Alchemy RPC error ({method}): {err}")
                     return None
                 return data.get('result')
             except Exception as e:
+                err_key = f"{rpc_url[:30]}:{method}"
+                if err_key not in _chain_error_printed:
+                    _chain_error_printed.add(err_key)
+                    safe_print(f"⚠️  Alchemy RPC call failed ({method}): {e}")
                 logger.warning(f"Alchemy RPC call failed ({method}): {e}")
                 if attempt < _retries:
                     time.sleep(min(2 ** attempt, 8))
