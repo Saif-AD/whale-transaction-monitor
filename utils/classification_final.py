@@ -379,7 +379,7 @@ class CEXClassificationEngine(BaseAnalysisEngine):
                 )
             
             # 🔧 FALLBACK: Legacy hardcoded CEX check (maintained for compatibility)
-            legacy_result = self._check_hardcoded_cex_addresses(from_addr_norm, to_addr_norm)
+            legacy_result = self._check_hardcoded_cex_addresses(from_addr_norm, to_addr_norm, blockchain)
             if legacy_result:
                 classification, confidence, evidence = legacy_result
                 # Boost confidence for known hardcoded exchanges
@@ -410,43 +410,40 @@ class CEXClassificationEngine(BaseAnalysisEngine):
                 AnalysisPhase.CEX_CLASSIFICATION.value
             )
     
-    def _check_hardcoded_cex_addresses(self, from_addr: str, to_addr: str) -> Optional[Tuple[ClassificationType, float, List[str]]]:
-        """Check hardcoded CEX address lists with DEX exclusion."""
+    def _check_hardcoded_cex_addresses(self, from_addr: str, to_addr: str, blockchain: str = "ethereum") -> Optional[Tuple[ClassificationType, float, List[str]]]:
+        """Check hardcoded CEX address lists with DEX exclusion.  Chain-aware."""
         try:
-            # CRITICAL FIX: First check if these are DEX addresses
             dex_protocols = {
                 "0x7a250d5630b4cf539739df2c5dacb4c659f2488d": "Uniswap V2 Router",
-                "0xe592427a0aece92de3edee1f18e0157c05861564": "Uniswap V3 Router", 
+                "0xe592427a0aece92de3edee1f18e0157c05861564": "Uniswap V3 Router",
                 "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45": "Uniswap V3 Router 2",
                 "0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f": "SushiSwap Router",
                 "0x1111111254fb6c44bac0bed2854e76f90643097d": "1inch V4 Router",
                 "0xdef171fe48cf0115b1d80b88dc8eab59176fee57": "ParaSwap V5",
-                "0xdef1c0ded9bec7f1a1670819833240f027b25eff": "0x Protocol"
+                "0xdef1c0ded9bec7f1a1670819833240f027b25eff": "0x Protocol",
             }
-            
-            # If either address is a DEX, return None (no CEX classification)
+
             if from_addr.lower() in dex_protocols or to_addr.lower() in dex_protocols:
-                self.logger.debug(f"DEX address detected: {from_addr} -> {to_addr}, skipping CEX classification")
                 return None
-            
-            # Check if from_addr is a known exchange (actual CEX only)
-            if from_addr in known_exchange_addresses:
-                exchange_name = known_exchange_addresses[from_addr]
-                classification = ClassificationType.BUY
-                confidence = 0.80
-                evidence = [f"Hardcoded CEX: Buying from {exchange_name}"]
-                return classification, confidence, evidence
-            
-            # Check if to_addr is a known exchange (actual CEX only)
-            if to_addr in known_exchange_addresses:
-                exchange_name = known_exchange_addresses[to_addr]
-                classification = ClassificationType.SELL
-                confidence = 0.80
-                evidence = [f"Hardcoded CEX: Selling to {exchange_name}"]
-                return classification, confidence, evidence
-            
+
+            # Build chain-aware lookup: merge EVM globals + chain-specific sets
+            chain = (blockchain or "ethereum").lower()
+            cex_lookup = dict(known_exchange_addresses)
+            if chain == "solana":
+                cex_lookup.update(solana_exchange_addresses)
+            elif chain == "xrp":
+                cex_lookup.update(xrp_exchange_addresses)
+
+            if from_addr in cex_lookup:
+                exchange_name = cex_lookup[from_addr]
+                return ClassificationType.BUY, 0.80, [f"Hardcoded CEX: Buying from {exchange_name}"]
+
+            if to_addr in cex_lookup:
+                exchange_name = cex_lookup[to_addr]
+                return ClassificationType.SELL, 0.80, [f"Hardcoded CEX: Selling to {exchange_name}"]
+
             return None
-            
+
         except Exception as e:
             self.logger.warning(f"Hardcoded CEX check failed: {e}")
             return None
@@ -2686,7 +2683,105 @@ class WhaleIntelligenceEngine:
         mapped_result.evidence = evidence
         
         return mapped_result
-    
+
+    # Known DEX routers and DeFi protocols for fast-path classification
+    _EVM_DEX_ROUTERS = {
+        '0x7a250d5630b4cf539739df2c5dacb4c659f2488d': 'Uniswap V2 Router',
+        '0xe592427a0aece92de3edee1f18e0157c05861564': 'Uniswap V3 Router',
+        '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45': 'Uniswap V3 Router 2',
+        '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad': 'Uniswap Universal Router',
+        '0xef1c6e67703c7bd7107eed8303fbe6ec2554bf6b': 'Uniswap Universal Router V1',
+        '0x000000000004444c5dc75cb358380d2e3de08a90': 'Uniswap Permit2',
+        '0x000000000022d473030f116ddee9f6b43ac78ba3': 'Uniswap Permit2 V1',
+        '0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f': 'SushiSwap Router',
+        '0x1111111254eeb25477b68fb85ed929f73a960582': '1inch V5 Router',
+        '0x1111111254fb6c44bac0bed2854e76f90643097d': '1inch V4 Router',
+        '0x111111125421ca6dc452d289314280a0f8842a65': '1inch V6 Router',
+        '0x6131b5fae19ea4f9d964eac0408e4408b66337b5': 'Kyber Router',
+        '0xdef1c0ded9bec7f1a1670819833240f027b25eff': '0x Exchange Proxy',
+        '0x881d40237659c251811cec9c364ef91dc08d300c': 'MetaMask Swap',
+        '0x9008d19f58aabd9ed0d60971565aa8510560ab41': 'CoW Protocol Settlement',
+        '0x99a58482ba3d06e0e1e9444c8b7a8c7649e8c9c1': 'Curve Router',
+        '0xba12222222228d8ba445958a75a0704d566bf2c8': 'Balancer V2 Vault',
+    }
+
+    _EVM_DEFI_PROTOCOLS = {
+        '0x7d2768de32b0b80b7a3454c06bdac94a69ddc7a9': ('Aave V2', 'DEFI'),
+        '0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2': ('Aave V3', 'DEFI'),
+        '0x3d9819210a31b4961b30ef54be2aed79b9c9cd3b': ('Compound', 'DEFI'),
+        '0xae7ab96520de3a18e5e111b5eaab95820216e558': ('Lido stETH', 'STAKING'),
+        '0xbebc44782c7db0a1a60cb6fe97d0b483032ff1c7': ('Curve 3Pool', 'DEFI'),
+        '0xd5f7838f5c461feff7fe49ea5ebaf7728bb0adfa': ('mETH Protocol', 'STAKING'),
+        '0xc36442b4a4522e871399cd717abdd847ab11fe88': ('Uniswap V3 Positions NFT', 'DEFI'),
+        '0x40ec5b33f54e0e8a33a975908c5ba1c14e5bbbdf': ('Polygon Bridge', 'TRANSFER'),
+        '0x8315177ab297ba92a06054ce80a67ed4dbd7ed3a': ('Arbitrum Bridge', 'TRANSFER'),
+        '0x99c9fc46f92e8a1c0dec1b1747d010903e884be1': ('Optimism Gateway', 'TRANSFER'),
+    }
+
+    _NULL_ADDRESS = '0x0000000000000000000000000000000000000000'
+
+    def _evm_fast_path(self, from_addr: str, to_addr: str, transaction: Dict[str, Any]):
+        """Fast-path classification for obvious EVM patterns.
+        Returns (ClassificationType, confidence, reasoning, whale_signals) or None."""
+        from_lower = from_addr.lower()
+        to_lower = to_addr.lower()
+
+        # Null address = mint (from) or burn (to)
+        if from_lower == self._NULL_ADDRESS:
+            return (
+                ClassificationType.BUY, 0.92,
+                f"Token mint: from null address to {to_addr[:10]}...",
+                ["MINT_DETECTED"]
+            )
+        if to_lower == self._NULL_ADDRESS:
+            return (
+                ClassificationType.SELL, 0.92,
+                f"Token burn: sent to null address from {from_addr[:10]}...",
+                ["BURN_DETECTED"]
+            )
+
+        # DEX router interaction
+        from_dex = self._EVM_DEX_ROUTERS.get(from_lower)
+        to_dex = self._EVM_DEX_ROUTERS.get(to_lower)
+        if to_dex and not from_dex:
+            return (
+                ClassificationType.SELL, 0.85,
+                f"Token sent to {to_dex} router (DEX sell)",
+                ["DEX_ROUTER_SELL"]
+            )
+        if from_dex and not to_dex:
+            return (
+                ClassificationType.BUY, 0.85,
+                f"Token received from {from_dex} router (DEX buy)",
+                ["DEX_ROUTER_BUY"]
+            )
+
+        # Known DeFi protocol interaction
+        to_proto = self._EVM_DEFI_PROTOCOLS.get(to_lower)
+        from_proto = self._EVM_DEFI_PROTOCOLS.get(from_lower)
+        if to_proto:
+            name, cat = to_proto
+            if cat == 'TRANSFER':
+                return (ClassificationType.TRANSFER, 0.88,
+                        f"Bridge deposit to {name}", ["BRIDGE_DEPOSIT"])
+            if cat == 'STAKING':
+                return (ClassificationType.BUY, 0.85,
+                        f"Staking deposit to {name}", ["STAKING_DEPOSIT"])
+            return (ClassificationType.DEFI, 0.82,
+                    f"DeFi deposit to {name}", ["DEFI_DEPOSIT"])
+        if from_proto:
+            name, cat = from_proto
+            if cat == 'TRANSFER':
+                return (ClassificationType.TRANSFER, 0.88,
+                        f"Bridge withdrawal from {name}", ["BRIDGE_WITHDRAWAL"])
+            if cat == 'STAKING':
+                return (ClassificationType.SELL, 0.85,
+                        f"Unstaking withdrawal from {name}", ["STAKING_WITHDRAWAL"])
+            return (ClassificationType.DEFI, 0.82,
+                    f"DeFi withdrawal from {name}", ["DEFI_WITHDRAWAL"])
+
+        return None
+
     def analyze_transaction_comprehensive(self, transaction: Dict[str, Any]) -> IntelligenceResult:
         """
         🎯 TWO-STAGE ANALYSIS PIPELINE 🎯
@@ -2705,7 +2800,10 @@ class WhaleIntelligenceEngine:
             # Extract and validate transaction data
             tx_data = self._extract_transaction_data(transaction)
             if not tx_data:
-                raise DataValidationError("Invalid transaction data provided")
+                return IntelligenceResult(
+                    classification=ClassificationType.TRANSFER,
+                    confidence=0.0,
+                )
             
             tx_hash, blockchain, from_addr, to_addr = tx_data
             
@@ -2722,6 +2820,18 @@ class WhaleIntelligenceEngine:
             
             # Initialize result structure
             result = IntelligenceResult()
+            
+            # ========== FAST PATH: EVM pre-checks ==========
+            if blockchain in ('ethereum', 'polygon'):
+                fast_result = self._evm_fast_path(from_addr, to_addr, transaction)
+                if fast_result is not None:
+                    result.classification = fast_result[0]
+                    result.confidence = fast_result[1]
+                    result.master_classifier_reasoning = fast_result[2]
+                    result.whale_signals = fast_result[3]
+                    result.final_whale_score = self._calculate_whale_score(result.whale_signals)
+                    result.phases_completed = 1
+                    return result
             
             # ========== STAGE 1: MANDATORY CORE ANALYSIS ==========
             tx_logger.debug("🔍 STAGE 1: Executing Mandatory Core Analysis")
@@ -2879,13 +2989,12 @@ class WhaleIntelligenceEngine:
     def _extract_transaction_data(self, transaction: Dict[str, Any]) -> Optional[Tuple[str, str, str, str]]:
         """Extract and validate core transaction data."""
         try:
-            tx_hash = transaction.get('hash', transaction.get('transaction_hash', ''))
+            tx_hash = transaction.get('hash', transaction.get('tx_hash', transaction.get('transaction_hash', '')))
             blockchain = normalize_blockchain(transaction.get('blockchain', 'ethereum'))
             from_addr = normalize_address(transaction.get('from', transaction.get('from_address', '')))
             to_addr = normalize_address(transaction.get('to', transaction.get('to_address', '')))
             
             if not tx_hash or not from_addr or not to_addr:
-                self.logger.warning("Missing required transaction fields")
                 return None
             
             return tx_hash, blockchain, from_addr, to_addr
@@ -5142,81 +5251,142 @@ def analyze_address_characteristics(address: str, blockchain: str = "ethereum") 
         }
 
 
-def enhanced_solana_classification(owner: str, prev_owner: Optional[str], amount_change: float, tx_hash: str, token: str, source: str = "solana") -> tuple:
+# Solana program IDs for classification
+_SOLANA_DEX_PROGRAMS = {
+    'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4': 'Jupiter V6',
+    'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB': 'Jupiter V4',
+    'jupoNjAxXgZ4rjzxzPMP4oxduvQsQtZzyknqvzYNrNu': 'Jupiter Limit Order',
+    '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8': 'Raydium AMM V4',
+    'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK': 'Raydium CLMM',
+    'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C': 'Raydium CPMM',
+    'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc': 'Orca Whirlpool',
+    '9W959DqEETiGZocYWCQPaJ6sBmUzgfxXfqGeTEdp3aQP': 'Orca V2',
+    'srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX': 'OpenBook V1',
+    'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo': 'Meteora DLMM',
+    'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB': 'Meteora Pools',
+    'PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjFHGqdXY': 'Phoenix DEX',
+}
+_SOLANA_STAKING_PROGRAMS = {
+    'MarBmsSgKXdrN1egZf5sqe1TMai9K1rChYNDJgjq7aD': 'Marinade Finance',
+    'Stake11111111111111111111111111111111111111': 'Native Staking',
+    'SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy': 'Stake Pool',
+    'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So': 'Marinade mSOL',
+    'SVMBnLqz6hHFGNJHmSPGoidvZTGnR7eRQEVSb9yFDHk': 'Sanctum Infinity',
+}
+_SOLANA_LENDING_PROGRAMS = {
+    'So1endDq2YkqhipRh3WViPa8hFMqLctTVoafVa2F38h': 'Solend',
+    'MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA': 'Marginfi',
+    'KLend2g3cP87ber8kMM6nnwW7pTjMmTfNGbEjEmmnXs': 'Kamino Lending',
+    'dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH': 'Drift V2',
+}
+
+
+def enhanced_solana_classification(owner: str, prev_owner: Optional[str], amount_change: float,
+                                    tx_hash: str, token: str, source: str = "solana",
+                                    program_ids: Optional[set] = None) -> tuple:
     """
-    Enhanced Solana transaction classification function
-    
-    Args:
-        owner: Current token owner address
-        prev_owner: Previous token owner address (can be None)
-        amount_change: Change in token amount
-        tx_hash: Transaction hash
-        token: Token symbol
-        source: Source identifier (default: "solana")
-        
+    Enhanced Solana transaction classification function.
+
+    Checks Solana-specific CEX/DEX address databases first, then program IDs,
+    then falls back to the comprehensive engine and amount-change heuristics.
+
     Returns:
         Tuple of (classification, confidence) where:
         - classification: "buy", "sell", or "transfer"
         - confidence: confidence score (0-10)
     """
     try:
-        # Create transaction data for comprehensive analysis
+        from_addr = prev_owner or ''
+        to_addr = owner or ''
+
+        # --- Fast path: Solana-specific CEX/DEX address check ---
+        from_is_cex = from_addr in solana_exchange_addresses
+        to_is_cex = to_addr in solana_exchange_addresses
+        from_is_dex = from_addr in SOLANA_DEX_ADDRESSES
+        to_is_dex = to_addr in SOLANA_DEX_ADDRESSES
+
+        if from_is_cex and not to_is_cex:
+            return 'buy', 8
+        if to_is_cex and not from_is_cex:
+            return 'sell', 8
+        if from_is_dex and not to_is_dex:
+            return 'buy', 7
+        if to_is_dex and not from_is_dex:
+            return 'sell', 7
+
+        # --- Program ID classification (gRPC only) ---
+        if program_ids:
+            has_dex = any(pid in _SOLANA_DEX_PROGRAMS for pid in program_ids)
+            has_staking = any(pid in _SOLANA_STAKING_PROGRAMS for pid in program_ids)
+            has_lending = any(pid in _SOLANA_LENDING_PROGRAMS for pid in program_ids)
+
+            if has_dex:
+                if amount_change > 0:
+                    return 'buy', 7
+                elif amount_change < 0:
+                    return 'sell', 7
+                return 'buy', 5
+
+            if has_staking:
+                if amount_change < 0:
+                    return 'buy', 6  # Staking = locking tokens = accumulation
+                return 'sell', 6  # Unstaking = unlocking
+
+            if has_lending:
+                if amount_change < 0:
+                    return 'buy', 5  # Depositing to lending = accumulation-like
+                else:
+                    return 'sell', 5  # Withdrawing from lending
+
+        # --- Comprehensive engine fallback ---
         transaction_data = {
             'chain': 'solana',
             'blockchain': 'solana',
             'hash': tx_hash,
-            'from_address': prev_owner or '',
-            'to_address': owner,
-            'value_usd': abs(amount_change) * 1000,  # Rough estimate for analysis
+            'from_address': from_addr,
+            'to_address': to_addr,
+            'value_usd': abs(amount_change) * 1000,
             'token_symbol': token,
-            'amount_change': amount_change
+            'amount_change': amount_change,
         }
-        
-        # Use global whale engine (avoid re-init)
+
         global _GLOBAL_WHALE_ENGINE
         if _GLOBAL_WHALE_ENGINE is None:
             _GLOBAL_WHALE_ENGINE = WhaleIntelligenceEngine()
         result = _GLOBAL_WHALE_ENGINE.analyze_transaction_comprehensive(transaction_data)
-        
-        # Extract classification and confidence
+
         classification = result.classification.value.lower()
         confidence_score = result.confidence
-        
-        # Map classification to expected format
+
         if classification in ['dex_swap_buy', 'buy']:
             final_classification = 'buy'
         elif classification in ['dex_swap_sell', 'sell']:
             final_classification = 'sell'
         else:
             final_classification = 'transfer'
-        
-        # Convert confidence to 0-10 scale (expected by the calling code)
+
         final_confidence = min(10, max(0, confidence_score * 10))
-        
-        # Simple heuristic based on amount change direction if comprehensive analysis fails
+
         if final_confidence < 1:
             if amount_change > 0:
                 final_classification = 'buy'
                 final_confidence = 3
             elif amount_change < 0:
-                final_classification = 'sell' 
+                final_classification = 'sell'
                 final_confidence = 3
             else:
                 final_classification = 'transfer'
                 final_confidence = 2
-        
+
         return final_classification, final_confidence
-        
+
     except Exception as e:
         logger.error(f"Error in enhanced_solana_classification: {e}")
-        
-        # Fallback classification based on amount change
         if amount_change > 0:
             return 'buy', 2
         elif amount_change < 0:
             return 'sell', 2
-        else:
-            return 'transfer', 1
+        return 'transfer', 1
 
 
 # =============================================================================

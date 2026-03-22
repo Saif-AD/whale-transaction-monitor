@@ -17,6 +17,7 @@ from config.settings import (
     shutdown_flag,
 )
 from data.tokens import SOL_TOKENS_TO_MONITOR, TOKEN_PRICES
+from data.addresses import solana_exchange_addresses as DATA_SOL_CEX, SOLANA_DEX_ADDRESSES as DATA_SOL_DEX
 from utils.base_helpers import safe_print
 from utils.alchemy_rpc import get_alchemy_rpc, _rpc_call
 
@@ -78,20 +79,21 @@ SOLANA_DEX_ADDRESSES = {
 
 
 def _classify_solana_transfer(from_addr, to_addr):
-    """Classify a Solana transfer using known exchange and DEX addresses."""
-    from_is_cex = from_addr in SOLANA_CEX_ADDRESSES
-    to_is_cex = to_addr in SOLANA_CEX_ADDRESSES
-    from_is_dex = from_addr in SOLANA_DEX_ADDRESSES
-    to_is_dex = to_addr in SOLANA_DEX_ADDRESSES
+    """Classify a Solana transfer using local + global exchange and DEX addresses."""
+    from_is_cex = from_addr in SOLANA_CEX_ADDRESSES or from_addr in DATA_SOL_CEX
+    to_is_cex = to_addr in SOLANA_CEX_ADDRESSES or to_addr in DATA_SOL_CEX
+    from_is_dex = from_addr in SOLANA_DEX_ADDRESSES or from_addr in DATA_SOL_DEX
+    to_is_dex = to_addr in SOLANA_DEX_ADDRESSES or to_addr in DATA_SOL_DEX
 
     if from_is_cex and not to_is_cex:
-        return 'BUY'    # Withdrawal from exchange
-    elif to_is_cex and not from_is_cex:
-        return 'SELL'   # Deposit to exchange
-    elif from_is_dex or to_is_dex:
-        return 'BUY' if from_is_dex else 'SELL'
-    else:
-        return 'TRANSFER'
+        return 'BUY'
+    if to_is_cex and not from_is_cex:
+        return 'SELL'
+    if from_is_dex and not to_is_dex:
+        return 'BUY'
+    if to_is_dex and not from_is_dex:
+        return 'SELL'
+    return 'TRANSFER'
 
 # All Solana tokens to track — includes stablecoins because they carry real volume on Solana
 TOP_SOLANA_TOKENS = [
@@ -312,7 +314,7 @@ def fetch_solana_token_transfers():
                     'to': owner if diff > 0 else '',
                     'owner': owner,
                     'symbol': symbol,
-                    'amount': str(abs(diff)),
+                    'amount': float(abs(diff)),
                     'tx_hash': tx_sig,
                     'timestamp': block_time,
                     'decimals': decimals,
@@ -386,15 +388,15 @@ def print_new_solana_transfers():
                     price = TOKEN_PRICES.get(symbol, 0)
                     estimated_usd = token_amount * price
 
-                    solana_threshold = 500  # $500 for Solana volatile tokens
-                    if estimated_usd < solana_threshold:
+                    token_min = SOL_TOKENS_TO_MONITOR.get(symbol, {}).get("min_threshold", GLOBAL_USD_THRESHOLD)
+                    effective_threshold = max(token_min, GLOBAL_USD_THRESHOLD)
+                    if estimated_usd < effective_threshold:
                         continue
 
                     from_addr = event["from"]
                     to_addr = event["to"]
                     tx_hash = event["tx_hash"]
 
-                    # Solana-specific classification
                     classification = _classify_solana_transfer(from_addr, to_addr)
 
                     from utils.dedup import handle_event
@@ -404,7 +406,8 @@ def print_new_solana_transfers():
                         'source': 'solana_alchemy'
                     })
 
-                    handle_event(event)
+                    if not handle_event(event):
+                        continue
 
                     from config.settings import solana_api_buy_counts, solana_api_sell_counts
                     if 'BUY' in classification:
@@ -412,7 +415,11 @@ def print_new_solana_transfers():
                     elif 'SELL' in classification:
                         solana_api_sell_counts[symbol] += 1
 
+                    current_time = time.strftime('%Y-%m-%d %H:%M:%S')
                     safe_print(f"\n[SOLANA - {symbol} | ${estimated_usd:,.2f} USD] Tx {tx_hash[:24]}...")
+                    safe_print(f"  Time: {current_time}")
+                    safe_print(f"  From: {from_addr[:16]}..." if from_addr else "  From: unknown")
+                    safe_print(f"  To:   {to_addr[:16]}..." if to_addr else "  To:   unknown")
                     safe_print(f"  Amount: {token_amount:,.6f} {symbol} (~${estimated_usd:,.2f} USD)")
                     safe_print(f"  Classification: {classification}")
 

@@ -177,9 +177,9 @@ THEGRAPH_API_BASE_URL = "https://gateway.thegraph.com/api"
 SOLSCAN_API_BASE_URL = "https://pro-api.solscan.io/v2.0"  # Updated to v2 API
 ETHERSCAN_API_BASE_URL = "https://api.etherscan.io/api"  # Explicitly defining this
 POLYGONSCAN_API_BASE_URL = "https://api.polygonscan.com/api"
-# BigQuery Configuration - Updated to match new credentials
-BIGQUERY_PROJECT_ID = "peak-seat-465413-u9"  # Updated to match service account
+# BigQuery Configuration - uses Application Default Credentials (gcloud auth)
+BIGQUERY_PROJECT_ID = "project-d79f0d68-06fc-45ca-b31"
 BIGQUERY_DATASET = "crypto_intelligence"
 
 # Add GCP_PROJECT_ID for backwards compatibility
-GCP_PROJECT_ID = "peak-seat-465413-u9"
+GCP_PROJECT_ID = "project-d79f0d68-06fc-45ca-b31"

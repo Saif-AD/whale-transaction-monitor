@@ -44,12 +44,19 @@ def _is_whale_relevant_transaction(from_addr: str, to_addr: str, token_symbol: s
         '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45',  # Uniswap V3 Router
         '0xe592427a0aece92de3edee1f18e0157c05861564',  # Uniswap V3 Router 2
         '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad',  # Uniswap Universal Router
+        '0xef1c6e67703c7bd7107eed8303fbe6ec2554bf6b',  # Uniswap Universal Router V1
+        '0x000000000004444c5dc75cb358380d2e3de08a90',  # Uniswap Permit2
+        '0x000000000022d473030f116ddee9f6b43ac78ba3',  # Uniswap Permit2 V1
         '0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f',  # SushiSwap Router
         '0x1111111254fb6c44bac0bed2854e76f90643097d',  # 1inch Router V4
+        '0x1111111254eeb25477b68fb85ed929f73a960582',  # 1inch V5 Router
+        '0x111111125421ca6dc452d289314280a0f8842a65',  # 1inch V6 Router
         '0xdef1c0ded9bec7f1a1670819833240f027b25eff',  # 0x Protocol Exchange
         '0x99a58482ba3d06e0e1e9444c8b7a8c7649e8c9c1',  # Curve Router
         '0xba12222222228d8ba445958a75a0704d566bf2c8',  # Balancer V2 Vault
         '0x9008d19f58aabd9ed0d60971565aa8510560ab41',  # CoW Protocol Settlement
+        '0x881d40237659c251811cec9c364ef91dc08d300c',  # MetaMask Swap
+        '0x6131b5fae19ea4f9d964eac0408e4408b66337b5',  # Kyber Router
     }
     
     # Known CEX addresses (major exchanges)
@@ -191,6 +198,29 @@ def print_new_erc20_transfers():
     from config.settings import shutdown_flag
     safe_print("✅ Ethereum Etherscan monitor started (60s interval)")
 
+    # Always seed block tracker to current tip — never process historical backlog
+    tip = 0
+    for _attempt in range(3):
+        try:
+            url = "https://api.etherscan.io/v2/api"
+            api_key = random.choice(ETHERSCAN_API_KEYS)
+            resp = requests.get(url, params={
+                "chainid": 1, "module": "proxy",
+                "action": "eth_blockNumber", "apikey": api_key
+            }, timeout=10).json()
+            tip = int(resp.get("result", "0x0"), 16)
+            if tip > 0:
+                break
+        except Exception:
+            time.sleep(1)
+
+    if tip > 0:
+        for symbol in TOKENS_TO_MONITOR:
+            last_processed_block[symbol] = tip
+        safe_print(f"   Ethereum tip: block {tip} (starting from live)")
+    else:
+        safe_print("   WARNING: Could not fetch Ethereum tip — will use Etherscan's latest only")
+
     while not shutdown_flag.is_set():
         try:
             _poll_erc20_transfers_once()
@@ -207,7 +237,9 @@ def _poll_erc20_transfers_once():
 
     transactions_processed = 0
 
-    for symbol, info in TOKENS_TO_MONITOR.items():
+    token_items = list(TOKENS_TO_MONITOR.items())
+    random.shuffle(token_items)
+    for symbol, info in token_items:
         contract = info["contract"]
         decimals = info["decimals"]
         price = TOKEN_PRICES.get(symbol, 0)
@@ -231,10 +263,15 @@ def _poll_erc20_transfers_once():
             if block_num <= last_processed_block.get(symbol, 0):
                 break
             new_transfers.append(tx)
-            
+
+        # Always advance the block pointer even if we cap how many we print
         if new_transfers:
             highest_block = max(int(t["blockNumber"]) for t in new_transfers)
             last_processed_block[symbol] = max(last_processed_block.get(symbol, 0), highest_block)
+
+        MAX_PER_TOKEN_PER_CYCLE = 10
+        if len(new_transfers) > MAX_PER_TOKEN_PER_CYCLE:
+            new_transfers = new_transfers[:MAX_PER_TOKEN_PER_CYCLE]
             
         for tx in reversed(new_transfers):
             try:

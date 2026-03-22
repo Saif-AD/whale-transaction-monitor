@@ -402,6 +402,7 @@ def print_new_polygon_transfers():
                 seen_hashes.clear()
 
         except Exception as e:
+            safe_print(f"⚠️  Polygon poll error: {e}")
             logger.warning(f"Polygon poll error: {e}")
 
         shutdown_flag.wait(timeout=POLL_INTERVAL)

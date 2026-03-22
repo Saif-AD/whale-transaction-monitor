@@ -16,10 +16,11 @@ class TransactionDeduplicator:
         self.chain_hashes = defaultdict(set)
         self.address_timestamps = defaultdict(dict)
         self.on_new_transaction = None  # Callback for real-time push
+        self._evm_seen_hashes = set()  # First-event-per-tx-hash for EVM multi-leg swaps
         self.stats = {
             'total_received': 0,
             'duplicates_caught': 0,
-            'circular_flows_caught': 0,  # New counter for circular flows
+            'circular_flows_caught': 0,
             'stablecoins_skipped': 0,
             'by_chain': defaultdict(lambda: {'total': 0, 'duplicates': 0, 'circular': 0}),
         }
@@ -65,6 +66,18 @@ class TransactionDeduplicator:
             self.stats['stablecoins_skipped'] += 1
             return False
 
+        # EVM multi-hop: a single DEX swap produces 3-4 internal ERC-20
+        # transfer logs (user→router→pool→user). Only keep the first log
+        # per tx_hash to avoid showing the same swap 4 times.
+        if chain in ('ethereum', 'polygon', 'bsc'):
+            tx_hash = event.get('tx_hash', '')
+            if tx_hash:
+                if tx_hash in self._evm_seen_hashes:
+                    self.stats['duplicates_caught'] += 1
+                    self.stats['by_chain'][chain]['duplicates'] += 1
+                    return False
+                self._evm_seen_hashes.add(tx_hash)
+
         unique_key = self.generate_key(event)
         
         # Check for direct duplicates
@@ -79,11 +92,14 @@ class TransactionDeduplicator:
                 
             return False
         
-        # Check for circular flows (A->B->A) within short time windows
-        # Only flag TRUE circular flows (same from/to reversed), not chains
+        # Check for circular flows (A->B->A) AND same-destination same-amount
+        # within short time windows
         from_addr = event.get('from', '')
         to_addr = event.get('to', '')
-        amount = event.get('amount', 0)
+        try:
+            amount = float(event.get('amount', 0))
+        except (ValueError, TypeError):
+            amount = 0
         symbol = event.get('symbol', '')
         
         current_time = time.time()
@@ -92,13 +108,49 @@ class TransactionDeduplicator:
             if current_time - tx_time > 3600:
                 continue
                 
-            # Must be same blockchain + same symbol + similar amount
-            # Only flag if from/to are truly reversed (A->B then B->A)
-            if (tx.get('blockchain', '').lower() == chain and
-                tx.get('symbol') == symbol and
-                abs(tx.get('amount', 0) - amount) / max(0.01, amount) < 0.01 and
+            if tx.get('blockchain', '').lower() != chain or tx.get('symbol') != symbol:
+                continue
+
+            try:
+                tx_amount = float(tx.get('amount', 0))
+            except (ValueError, TypeError):
+                tx_amount = 0
+
+            amount_similar = abs(tx_amount - amount) / max(0.01, amount) < 0.01
+
+            # Circular flow: from/to reversed with similar amount (A->B then B->A)
+            if (amount_similar and
                 tx.get('from') == to_addr and tx.get('to') == from_addr):
-                
+                self.stats['circular_flows_caught'] += 1
+                self.stats['by_chain'][chain]['circular'] += 1
+                return False
+
+            # Same-destination same-amount: different senders depositing the
+            # same amount to the same address within 5 minutes — visually
+            # spammy (common on XRP/BTC with round-number exchange deposits)
+            if (amount_similar and
+                to_addr and tx.get('to') == to_addr and
+                tx.get('from') != from_addr and
+                current_time - tx_time < 300):
+                self.stats['circular_flows_caught'] += 1
+                self.stats['by_chain'][chain]['circular'] += 1
+                return False
+
+            # Chained transfer: A→B then B→C with same amount (tumbling/wash).
+            # The new event's `from` matches a recent event's `to`.
+            if (amount_similar and
+                from_addr and tx.get('to') == from_addr and
+                current_time - tx_time < 300):
+                self.stats['circular_flows_caught'] += 1
+                self.stats['by_chain'][chain]['circular'] += 1
+                return False
+
+            # Same-amount flood: bot farms distributing identical amounts
+            # across many unique wallet pairs (e.g. 511.80 SOL x 20).
+            # All different addresses, but same chain+symbol+amount.
+            # Tight 2-minute window to avoid suppressing legitimate transfers.
+            if (amount_similar and
+                current_time - tx_time < 120):
                 self.stats['circular_flows_caught'] += 1
                 self.stats['by_chain'][chain]['circular'] += 1
                 return False

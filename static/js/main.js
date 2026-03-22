@@ -86,7 +86,7 @@ function handleRealtimeTransaction(tx) {
         <td data-label="Amount">${formatNumber(tx.amount || 0)} ${tx.symbol || ''}</td>
         <td data-label="USD Value">$${formatNumber(txUsdValue)}</td>
         <td data-label="Type">
-            <span class="badge bg-${getTypeColor(tx.classification || 'transfer')}">${capitalize(tx.classification || 'transfer')}</span>
+            <span class="badge bg-${getTypeColor(tx.classification || 'transfer')}" ${buildEntityTooltip(tx)}>${capitalize(tx.classification || 'transfer')}</span>
         </td>
         <td data-label="Time">
             <span title="${timestamp.toLocaleString()}">${formatTimeAgo(timestamp)}</span>
@@ -260,7 +260,7 @@ function updateTransactionsTable(transactions) {
                 <td data-label="Amount">${formatNumber(amount)} ${symbol}</td>
                 <td data-label="USD Value">$${formatNumber(usdValue)}</td>
                 <td data-label="Type">
-                    <span class="badge bg-${getTypeColor(type)}">${capitalize(type)}</span>
+                    <span class="badge bg-${getTypeColor(type)}" ${buildEntityTooltip(tx)}>${capitalize(type)}</span>
                 </td>
                 <td data-label="Time">
                     <span title="${timestamp.toLocaleString()}">${timeStr}</span>
@@ -366,6 +366,16 @@ function updateSystemStatus(data) {
         document.getElementById('duplicates-caught').textContent = formatNumber(data.deduplication.duplicates_caught);
         document.getElementById('dedup-rate').textContent = `${data.deduplication.dedup_ratio}%`;
     }
+}
+
+function buildEntityTooltip(tx) {
+    const from = tx.from_entity || '';
+    const to = tx.to_entity || '';
+    if (!from && !to) return '';
+    const parts = [];
+    if (from) parts.push('From: ' + from);
+    if (to) parts.push('To: ' + to);
+    return `title="${parts.join(' \u2192 ')}" style="cursor:help"`;
 }
 
 // Helper function to format number with commas

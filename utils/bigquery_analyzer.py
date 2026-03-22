@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from google.cloud import bigquery
 from config.api_keys import GCP_PROJECT_ID
 from config.settings import TEST_MODE
@@ -9,239 +9,236 @@ from typing import Dict, Any, Optional, List, Tuple
 
 logger = logging.getLogger(__name__)
 
+CACHE_TTL_SECONDS = 6 * 3600  # 6 hours
+NEGATIVE_CACHE_TTL_SECONDS = 6 * 3600
+DAILY_QUERY_BUDGET = 10
+DUST_THRESHOLD_ETH = 0.1
+QUICK_REJECT_VOLUME_ETH = 10
+
+
 class BigQueryAnalyzer:
     """
     Handles historical analysis of Ethereum addresses using Google BigQuery.
-    
-    Includes professional quota management and graceful fallback handling.
+
+    Includes caching, daily query budgets, dust filtering, and quota management.
     """
     def __init__(self):
         if TEST_MODE:
-            logger.info("🧪 TEST_MODE: BigQuery initialization skipped")
+            logger.info("TEST_MODE: BigQuery initialization skipped")
             self.client = None
         else:
             self.client = self._initialize_client()
-        
-        # 🔧 QUOTA MANAGEMENT SYSTEM
+
         self.quota_exhausted = False
         self.quota_exhausted_time = None
-        self.quota_reset_check_interval = 3600  # Check every hour
-        self.daily_query_count = 0
-        self.last_query_date = None
+        self.quota_reset_check_interval = 3600
+
+        self._cache: Dict[str, Dict[str, Any]] = {}
+        self._negative_cache: Dict[str, float] = {}
+        self._daily_query_count = 0
+        self._query_count_date: Optional[date] = None
 
     def _initialize_client(self) -> Optional[bigquery.Client]:
-        """Initializes the BigQuery client using service account credentials."""
         try:
-            from google.oauth2 import service_account
             from config.api_keys import GOOGLE_APPLICATION_CREDENTIALS
             import os
-            
-            # Check if credentials file exists
-            if not GOOGLE_APPLICATION_CREDENTIALS or not os.path.exists(GOOGLE_APPLICATION_CREDENTIALS):
-                logger.warning(f"BigQuery credentials file not found: {GOOGLE_APPLICATION_CREDENTIALS}")
-                logger.info("BigQuery features will be disabled. To enable:")
-                logger.info("1. Ensure bigquery_credentials.json exists in config/ directory")
-                logger.info("2. Verify service account has 'BigQuery Job User' role")
-                return None
-            
-            # Load service account credentials
-            credentials = service_account.Credentials.from_service_account_file(
-                GOOGLE_APPLICATION_CREDENTIALS,
-                scopes=["https://www.googleapis.com/auth/cloud-platform"]
-            )
-            
-            # Initialize client with explicit credentials and project
-            project_id = credentials.project_id or GCP_PROJECT_ID
-            client = bigquery.Client(credentials=credentials, project=project_id)
-            
-            logger.info(f"BigQuery client initialized with service account for project: {project_id}")
-            
-            # Test connection with a simple query (with timeout)
+
+            if GOOGLE_APPLICATION_CREDENTIALS and os.path.exists(GOOGLE_APPLICATION_CREDENTIALS):
+                from google.oauth2 import service_account
+                credentials = service_account.Credentials.from_service_account_file(
+                    GOOGLE_APPLICATION_CREDENTIALS,
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"]
+                )
+                project_id = credentials.project_id or GCP_PROJECT_ID
+                client = bigquery.Client(credentials=credentials, project=project_id)
+            else:
+                import google.auth
+                credentials, project = google.auth.default()
+                project_id = project or GCP_PROJECT_ID
+                client = bigquery.Client(credentials=credentials, project=project_id)
+                logger.info("Using Application Default Credentials for BigQuery")
+
+            logger.info(f"BigQuery client initialized for project: {project_id}")
+
             try:
                 test_query = "SELECT 1 as test_value"
                 job_config = bigquery.QueryJobConfig()
-                job_config.job_timeout_ms = 5000  # 5 second timeout
-                
+                job_config.job_timeout_ms = 5000
                 query_job = client.query(test_query, job_config=job_config)
-                results = query_job.result(timeout=5.0)  # 5 second timeout
-                list(results)  # Consume the results to test the connection
-                logger.info("✅ BigQuery client connection verified successfully")
+                list(query_job.result(timeout=5.0))
+                logger.info("BigQuery client connection verified")
             except Exception as timeout_error:
-                logger.warning(f"BigQuery connection test failed (timeout): {timeout_error}")
-                logger.info("BigQuery client created but connection not verified")
-                
+                logger.warning(f"BigQuery connection test failed: {timeout_error}")
+
             return client
-            
+
         except Exception as e:
             error_msg = str(e)
             if "403" in error_msg or "Access Denied" in error_msg:
-                logger.warning("⚠️ BigQuery 403 Access Denied")
-                logger.warning("⚠️ Service account needs 'BigQuery Job User' role")
-                logger.warning("⚠️ Run: gcloud projects add-iam-policy-binding peak-seat-465413-u9 \\")
-                logger.warning("    --member='serviceAccount:bigqueryserviceaccount@peak-seat-465413-u9.iam.gserviceaccount.com' \\")
-                logger.warning("    --role='roles/bigquery.jobUser'")
+                logger.warning("BigQuery 403 Access Denied — service account needs 'BigQuery Job User' role")
             else:
                 logger.warning(f"BigQuery initialization failed: {e}")
-            
             logger.info("BigQuery features will be disabled.")
             return None
-    
+
+    # --- Cache helpers ---
+
+    def _get_cached(self, address: str) -> Optional[Dict[str, Any]]:
+        key = address.lower()
+        if key in self._negative_cache:
+            ts = self._negative_cache[key]
+            if time.time() - ts < NEGATIVE_CACHE_TTL_SECONDS:
+                return {"_negative": True}
+            del self._negative_cache[key]
+
+        if key in self._cache:
+            entry = self._cache[key]
+            if time.time() - entry["_cached_at"] < CACHE_TTL_SECONDS:
+                return entry
+            del self._cache[key]
+
+        return None
+
+    def _put_cache(self, address: str, result: Dict[str, Any]) -> None:
+        key = address.lower()
+        result["_cached_at"] = time.time()
+        self._cache[key] = result
+
+    def _put_negative_cache(self, address: str) -> None:
+        self._negative_cache[address.lower()] = time.time()
+
+    # --- Budget helpers ---
+
+    def _budget_available(self) -> bool:
+        today = date.today()
+        if self._query_count_date != today:
+            self._daily_query_count = 0
+            self._query_count_date = today
+        return self._daily_query_count < DAILY_QUERY_BUDGET
+
+    def _record_query(self) -> None:
+        today = date.today()
+        if self._query_count_date != today:
+            self._daily_query_count = 0
+            self._query_count_date = today
+        self._daily_query_count += 1
+        logger.debug(f"BigQuery daily budget: {self._daily_query_count}/{DAILY_QUERY_BUDGET}")
+
+    # --- Quota management ---
+
     def _check_quota_status(self) -> bool:
-        """
-        🔧 PROFESSIONAL QUOTA MANAGEMENT
-        
-        Check if BigQuery quota is available for queries.
-        Implements intelligent quota reset detection.
-        
-        Returns:
-            bool: True if quota is available, False if exhausted
-        """
-        # If we've never hit quota limits, assume available
         if not self.quota_exhausted:
             return True
-        
-        # Check if enough time has passed to retry (quota resets)
         if self.quota_exhausted_time:
-            time_since_exhaustion = datetime.now() - self.quota_exhausted_time
-            
-            # BigQuery free tier resets daily, but let's be conservative and check hourly
-            if time_since_exhaustion.total_seconds() >= self.quota_reset_check_interval:
-                logger.info("🔄 BigQuery quota reset check - attempting to restore service")
+            if (datetime.now() - self.quota_exhausted_time).total_seconds() >= self.quota_reset_check_interval:
+                logger.info("BigQuery quota reset check — restoring service")
                 self.quota_exhausted = False
                 self.quota_exhausted_time = None
                 return True
-        
         return False
-    
+
     def _handle_quota_exhaustion(self, error_msg: str) -> None:
-        """
-        🔧 PROFESSIONAL QUOTA EXHAUSTION HANDLER
-        
-        Mark quota as exhausted and implement intelligent retry logic.
-        
-        Args:
-            error_msg: Error message from BigQuery
-        """
         if not self.quota_exhausted:
-            logger.warning("🚨 BigQuery quota exhausted - implementing fallback mode")
-            logger.warning("🚨 Free tier limit: 1TB query processing per month")
-            logger.warning("🚨 System will retry quota availability every hour")
-            
+            logger.warning("BigQuery quota exhausted — entering fallback mode (retry in 1h)")
         self.quota_exhausted = True
         self.quota_exhausted_time = datetime.now()
-        
-        # Log helpful information for debugging
-        logger.warning(f"🚨 BigQuery quota exhaustion details: {error_msg}")
-        
+        logger.warning(f"BigQuery quota details: {error_msg}")
+
     def _is_quota_error(self, error_msg: str) -> bool:
-        """
-        🔧 QUOTA ERROR DETECTION
-        
-        Detect if an error is related to quota exhaustion.
-        
-        Args:
-            error_msg: Error message to analyze
-            
-        Returns:
-            bool: True if error is quota-related
-        """
         quota_indicators = [
-            'quota exceeded',
-            'quotaExceeded', 
-            'free query bytes scanned',
-            'billing quota',
-            'exceeds quota',
-            'limit exceeded'
+            'quota exceeded', 'quotaExceeded', 'free query bytes scanned',
+            'billing quota', 'exceeds quota', 'limit exceeded',
         ]
-        
         error_lower = error_msg.lower()
-        return any(indicator in error_lower for indicator in quota_indicators)
+        return any(ind in error_lower for ind in quota_indicators)
+
+    # --- Public API (signatures kept for classification_final.py) ---
 
     def analyze_address_whale_patterns(self, address: str) -> Optional[Dict[str, Any]]:
         """
         Analyze whale patterns for an address using BigQuery historical data.
-        
-        This method provides comprehensive whale intelligence including:
-        - Transaction volume analysis
-        - Behavioral patterns
-        - Whale classification tiers
-        - Historical activity insights
-        
-        Args:
-            address: Ethereum address to analyze
-            
-        Returns:
-            Dictionary with whale pattern analysis or None if analysis fails
+
+        Returns a dict with whale tier, confidence, signals etc., or None.
+        Signature must stay stable — called by classification_final.py Phase 8.
         """
         if not self.client:
-            logger.debug(f"BigQuery client not available for whale analysis of {address}")
             return None
-        
-        # 🔧 CRITICAL: Check quota status before expensive whale analysis
+
+        cached = self._get_cached(address)
+        if cached is not None:
+            if cached.get("_negative"):
+                logger.debug(f"Negative cache hit for {address}")
+                return None
+            logger.debug(f"Cache hit for {address}")
+            return cached
+
         if not self._check_quota_status():
-            logger.debug(f"BigQuery quota exhausted - skipping whale analysis for {address}")
+            logger.debug(f"BigQuery quota exhausted — skipping {address}")
+            return None
+
+        if not self._budget_available():
+            logger.debug(f"Daily query budget exhausted ({DAILY_QUERY_BUDGET}) — skipping {address}")
             return None
 
         try:
             address = address.lower()
-            
-            # Get historical stats first
+
             historical_stats = self.get_address_historical_stats(address)
             if not historical_stats:
+                self._put_negative_cache(address)
                 return None
-            
-            # Extract key metrics with defensive coding for None values
+
             total_eth_volume = float(historical_stats.get('total_eth_volume') or 0)
             max_eth_in_tx = float(historical_stats.get('max_eth_in_tx') or 0)
             total_transactions = int(historical_stats.get('total_transactions') or 0)
             active_days = int(historical_stats.get('active_days') or 0)
             unique_counterparties = int(historical_stats.get('unique_counterparties') or 0)
-            
-            # Whale classification logic
+
+            if total_eth_volume < QUICK_REJECT_VOLUME_ETH:
+                logger.debug(f"Quick reject {address}: {total_eth_volume:.1f} ETH < {QUICK_REJECT_VOLUME_ETH}")
+                self._put_negative_cache(address)
+                return None
+
             whale_tier = "UNKNOWN"
             whale_confidence = 0.0
             whale_signals = []
-            
-            # Volume-based classification
-            if total_eth_volume >= 10000:  # 10,000+ ETH
+
+            if total_eth_volume >= 10000:
                 whale_tier = "MEGA_WHALE"
                 whale_confidence = 0.95
                 whale_signals.append("MEGA_VOLUME_WHALE")
-            elif total_eth_volume >= 1000:  # 1,000+ ETH
+            elif total_eth_volume >= 1000:
                 whale_tier = "ULTRA_WHALE"
                 whale_confidence = 0.85
                 whale_signals.append("ULTRA_VOLUME_WHALE")
-            elif total_eth_volume >= 100:   # 100+ ETH
+            elif total_eth_volume >= 100:
                 whale_tier = "WHALE"
                 whale_confidence = 0.70
                 whale_signals.append("HIGH_VOLUME_WHALE")
-            elif total_eth_volume >= 10:    # 10+ ETH
+            elif total_eth_volume >= 10:
                 whale_tier = "MINI_WHALE"
                 whale_confidence = 0.50
                 whale_signals.append("MODERATE_VOLUME")
-            
-            # Single transaction size analysis
+
             if max_eth_in_tx >= 1000:
                 whale_signals.append("MEGA_SINGLE_TX")
                 whale_confidence = min(0.95, whale_confidence + 0.15)
             elif max_eth_in_tx >= 100:
                 whale_signals.append("LARGE_SINGLE_TX")
                 whale_confidence = min(0.90, whale_confidence + 0.10)
-            
-            # Activity pattern analysis
+
             if total_transactions >= 1000:
                 whale_signals.append("HIGH_FREQUENCY_TRADER")
                 whale_confidence = min(0.90, whale_confidence + 0.05)
-            
+
             if active_days >= 100:
                 whale_signals.append("PERSISTENT_ACTOR")
                 whale_confidence = min(0.90, whale_confidence + 0.05)
-            
+
             if unique_counterparties >= 100:
                 whale_signals.append("PROTOCOL_INTERACTOR")
                 whale_confidence = min(0.90, whale_confidence + 0.05)
-            
-            # Prepare analysis result
+
             analysis_result = {
                 'whale_tier': whale_tier,
                 'whale_confidence': whale_confidence,
@@ -251,32 +248,32 @@ class BigQueryAnalyzer:
                     'total_volume_eth': total_eth_volume,
                     'max_single_tx_eth': max_eth_in_tx,
                     'activity_score': min(100, (active_days * total_transactions) / 10),
-                    'network_reach': unique_counterparties
+                    'network_reach': unique_counterparties,
                 },
                 'is_whale': whale_confidence >= 0.50,
-                'classification_method': 'bigquery_historical_analysis'
+                'classification_method': 'bigquery_historical_analysis',
             }
-            
+
+            self._put_cache(address, analysis_result)
             logger.debug(f"BigQuery whale analysis for {address}: {whale_tier} (confidence: {whale_confidence:.2f})")
-            
             return analysis_result
-            
+
         except Exception as e:
             logger.warning(f"BigQuery whale pattern analysis failed for {address}: {e}")
             return None
 
     def get_address_historical_stats(self, address: str) -> Optional[Dict[str, Any]]:
         """
-        Queries BigQuery for historical transaction stats for a given address.
-        
-        Analyzes:
-        - total_transactions: High activity indicates a bot or very active trader
-        - active_days: Consistent activity over many days suggests persistent entity
-        - total_eth_volume: Primary indicator of financial weight
-        - max_eth_in_tx: Large single transactions are strong whale signals
-        - unique_counterparties: High number suggests interaction with many protocols
+        Query BigQuery for historical transaction stats with dust filtering.
         """
         if not self.client:
+            return None
+
+        if not self._check_quota_status():
+            return None
+
+        if not self._budget_available():
+            logger.debug(f"Daily query budget exhausted — skipping historical stats for {address}")
             return None
 
         address = address.lower()
@@ -293,47 +290,37 @@ class BigQueryAnalyzer:
             WHERE
                 (from_address = @address OR to_address = @address)
                 AND block_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY)
+                AND value / POW(10, 18) >= @dust_threshold
         """
-        
+
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
                 bigquery.ScalarQueryParameter("address", "STRING", address),
+                bigquery.ScalarQueryParameter("dust_threshold", "FLOAT64", DUST_THRESHOLD_ETH),
             ]
         )
 
-        # 🔧 CRITICAL: Check quota status before making expensive query
-        if not self._check_quota_status():
-            logger.debug(f"BigQuery quota exhausted - skipping historical analysis for {address}")
-            return None
-        
         try:
-            logger.debug(f"Running BigQuery historical analysis for address: {address}")
+            logger.debug(f"Running BigQuery historical analysis for {address}")
+            self._record_query()
             query_job = self.client.query(query, job_config=job_config)
-            results = query_job.result()  # Waits for the job to complete.
-            
+            results = query_job.result()
+
             for row in results:
-                # Convert row to a serializable dictionary
-                result_dict = {key: value for key, value in row.items()}
-                logger.debug(f"BigQuery stats for {address}: {result_dict}")
-                return result_dict
-            return None  # Should not be reached if there's a result
-        
+                return {key: value for key, value in row.items()}
+            return None
+
         except Exception as e:
             error_msg = str(e)
-            
-            # 🔧 CRITICAL: Handle quota exhaustion professionally
             if self._is_quota_error(error_msg):
                 self._handle_quota_exhaustion(error_msg)
-                logger.debug(f"BigQuery quota exhausted during query for {address} - fallback mode activated")
                 return None
-            else:
-                logger.error(f"BigQuery query failed for address {address}: {e}")
-                return None
+            logger.error(f"BigQuery query failed for {address}: {e}")
+            return None
 
-    def get_whale_addresses_by_volume(self, min_volume_eth: float = 1000) -> Optional[Dict[str, Any]]:
+    def get_whale_addresses_by_volume(self, min_volume_eth: float = 1000) -> Optional[List[Dict[str, Any]]]:
         """
-        Queries BigQuery to find addresses with high transaction volumes.
-        This can be used to populate our whale database.
+        Find addresses with high transaction volumes (used by discovery scripts).
         """
         if not self.client:
             return None
@@ -347,11 +334,12 @@ class BigQueryAnalyzer:
                     `bigquery-public-data.crypto_ethereum.transactions`
                 WHERE
                     block_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY)
+                    AND value / POW(10, 18) >= @dust_threshold
                 GROUP BY from_address
                 HAVING total_volume_eth >= @min_volume
-                
+
                 UNION ALL
-                
+
                 SELECT
                     to_address as address,
                     SUM(value / POW(10, 18)) AS total_volume_eth
@@ -359,10 +347,11 @@ class BigQueryAnalyzer:
                     `bigquery-public-data.crypto_ethereum.transactions`
                 WHERE
                     block_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY)
+                    AND value / POW(10, 18) >= @dust_threshold
                 GROUP BY to_address
                 HAVING total_volume_eth >= @min_volume
             )
-            SELECT 
+            SELECT
                 address,
                 SUM(total_volume_eth) as combined_volume
             FROM address_volumes
@@ -370,31 +359,32 @@ class BigQueryAnalyzer:
             ORDER BY combined_volume DESC
             LIMIT 1000
         """
-        
+
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
                 bigquery.ScalarQueryParameter("min_volume", "FLOAT", min_volume_eth),
+                bigquery.ScalarQueryParameter("dust_threshold", "FLOAT64", DUST_THRESHOLD_ETH),
             ]
         )
 
         try:
-            logger.info(f"Running BigQuery whale discovery query (min volume: {min_volume_eth} ETH)")
+            logger.info(f"Running BigQuery whale discovery (min volume: {min_volume_eth} ETH)")
             query_job = self.client.query(query, job_config=job_config)
             results = query_job.result()
-            
+
             whale_addresses = []
             for row in results:
                 whale_addresses.append({
                     'address': row['address'],
-                    'volume_eth': row['combined_volume']
+                    'volume_eth': row['combined_volume'],
                 })
-            
+
             logger.info(f"Found {len(whale_addresses)} potential whale addresses")
             return whale_addresses
-        
+
         except Exception as e:
             logger.error(f"BigQuery whale discovery query failed: {e}")
             return None
 
-# Global instance
-bigquery_analyzer = BigQueryAnalyzer() 
+
+bigquery_analyzer = BigQueryAnalyzer()

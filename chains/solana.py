@@ -115,23 +115,26 @@ def on_solana_message(ws, message):
 
         info = parsed_data.get("info", {})
         mint = info.get("mint")
-        current_amount = info.get("tokenAmount", {}).get("uiAmount", 0)
+        raw_amount = info.get("tokenAmount", {}).get("uiAmount", 0)
+        current_amount = float(raw_amount) if raw_amount is not None else 0.0
         owner = info.get("owner")
-        tx_hash = data["params"].get("result", {}).get("signature", "")
+        context = data["params"].get("result", {}).get("context", {})
+        slot = context.get("slot", 0)
+        pubkey = value.get("pubkey", "")
+        tx_hash = f"sol_ws_{slot}_{pubkey[:16]}"
 
-        # Skip transactions without a hash or with empty addresses
-        if not tx_hash or not owner or not mint:
+        if not owner or not mint:
             return
             
         # Get previous state
         prev_owner = None
-        prev_amount = 0
+        prev_amount = 0.0
         
         if mint in solana_previous_balances:
             prev_owner = solana_previous_balances[mint].get("owner")
             
         if owner in solana_previous_balances:
-            prev_amount = solana_previous_balances.get(owner, {}).get(mint, 0)
+            prev_amount = float(solana_previous_balances.get(owner, {}).get(mint, 0))
             
         amount_change = current_amount - prev_amount
         
@@ -144,9 +147,10 @@ def on_solana_message(ws, message):
             if token_info["mint"] == mint:
                 price = TOKEN_PRICES.get(symbol, 0)
                 usd_value = abs(amount_change) * price
-                min_threshold = 1_000  # $1K threshold for Solana WS
+                from data.tokens import SOL_TOKENS_TO_MONITOR
+                token_min = SOL_TOKENS_TO_MONITOR.get(symbol, {}).get("min_threshold", GLOBAL_USD_THRESHOLD)
+                min_threshold = max(token_min, GLOBAL_USD_THRESHOLD)
 
-                # Skip low-value transactions
                 if usd_value < min_threshold:
                     continue
 

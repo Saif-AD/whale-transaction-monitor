@@ -43,6 +43,10 @@ def on_whale_message(ws, message):
         if not amounts:
             return
 
+        IGNORED_CHAINS = {"tron", "trc20", "trx"}
+        if blockchain in IGNORED_CHAINS:
+            return
+
         # --- CLASSIFY FIRST, before handle_event ---
         # Build a transaction object for the classification engine
         primary_symbol = ""
@@ -69,7 +73,17 @@ def on_whale_message(ws, message):
                     primary_amount = amount
 
         if not non_stable_amounts:
-            return
+            all_usd = sum(float(a.get("value_usd", 0)) for a in amounts)
+            if all_usd < 500_000:
+                return
+            non_stable_amounts = [{
+                "symbol": amounts[0].get("symbol", "USDT").upper(),
+                "amount": float(amounts[0].get("amount", 0)),
+                "usd_value": all_usd,
+            }]
+            primary_symbol = non_stable_amounts[0]["symbol"]
+            primary_amount = non_stable_amounts[0]["amount"]
+            total_usd_value = all_usd
 
         # Run classification BEFORE storing events
         classification = "transfer"
