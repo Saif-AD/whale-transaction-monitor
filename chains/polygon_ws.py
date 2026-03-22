@@ -16,6 +16,7 @@ import logging
 from config.api_keys import ALCHEMY_POLYGON_WS, ALCHEMY_API_KEY
 from config.settings import shutdown_flag
 from data.tokens import POLYGON_TOKENS_TO_MONITOR, TOKEN_PRICES
+from data.addresses import known_exchange_addresses, DEX_ADDRESSES
 from utils.base_helpers import safe_print, log_error
 from utils.dedup import handle_event
 
@@ -97,38 +98,38 @@ _poly_ws_stored = 0
 
 
 def _classify_polygon(from_addr, to_addr):
-    """Classify a Polygon transfer using CEX/DEX/DeFi address databases."""
+    """Classify a Polygon transfer using CEX/DEX/DeFi + cross-chain EVM address databases."""
     fa = from_addr.lower()
     ta = to_addr.lower()
-    
-    from_is_cex = fa in POLYGON_CEX_ADDRESSES
-    to_is_cex = ta in POLYGON_CEX_ADDRESSES
-    from_is_dex = fa in POLYGON_DEX_ADDRESSES
-    to_is_dex = ta in POLYGON_DEX_ADDRESSES
+
+    from_is_cex = fa in POLYGON_CEX_ADDRESSES or fa in known_exchange_addresses
+    to_is_cex = ta in POLYGON_CEX_ADDRESSES or ta in known_exchange_addresses
+    from_is_dex = fa in POLYGON_DEX_ADDRESSES or fa in DEX_ADDRESSES
+    to_is_dex = ta in POLYGON_DEX_ADDRESSES or ta in DEX_ADDRESSES
     from_is_defi = fa in POLYGON_DEFI_ADDRESSES
     to_is_defi = ta in POLYGON_DEFI_ADDRESSES
-    
-    # CEX flow (strongest signal)
+
     if from_is_cex and not to_is_cex:
-        return 'BUY'    # Withdrawal from exchange = someone bought and is withdrawing
+        return 'BUY'
     if to_is_cex and not from_is_cex:
-        return 'SELL'   # Deposit to exchange = someone is depositing to sell
-    
-    # DEX interaction (swap)
+        return 'SELL'
+
     if from_is_dex and not to_is_dex:
-        return 'BUY'    # Receiving from DEX = bought via swap
+        return 'BUY'
     if to_is_dex and not from_is_dex:
-        return 'SELL'   # Sending to DEX = selling via swap
-    
-    # DeFi protocol interaction
+        return 'SELL'
+
     if to_is_defi and not from_is_defi:
-        return 'BUY'    # Depositing into Aave/bridge = investment/accumulation
+        return 'BUY'
     if from_is_defi and not to_is_defi:
-        return 'SELL'   # Withdrawing from Aave/bridge = taking profit
-    
-    # Bridge detection by address pattern (contracts that interact with L1)
-    # Large stablecoin transfers to unknown contracts are often bridge deposits
-    
+        return 'SELL'
+
+    # Null address interactions (mints/burns)
+    if fa == '0x0000000000000000000000000000000000000000':
+        return 'BUY'
+    if ta == '0x0000000000000000000000000000000000000000':
+        return 'SELL'
+
     return 'TRANSFER'
 
 

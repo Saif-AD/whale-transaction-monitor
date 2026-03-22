@@ -30,7 +30,7 @@ def on_xrp_message(ws, message):
         data = json.loads(message)
         txn = data.get("transaction")
         tx_type = txn.get("TransactionType", "") if txn else ""
-        if txn and tx_type in ("Payment", "OfferCreate"):
+        if txn and tx_type in ("Payment", "OfferCreate", "AMMDeposit", "AMMWithdraw"):
             total_transfers_fetched += 1
 
             # Get transaction hash for deduplication
@@ -41,33 +41,34 @@ def on_xrp_message(ws, message):
                 return
 
             # Parse amount based on transaction type
+            amount_xrp = 0
             if tx_type == "OfferCreate":
-                # OfferCreate: extract XRP amount from TakerPays or TakerGets
                 taker_pays = txn.get("TakerPays", {})
                 taker_gets = txn.get("TakerGets", {})
-                amount_xrp = 0
                 if isinstance(taker_pays, str):
-                    # TakerPays is XRP (in drops) — creator is buying tokens with XRP
                     try:
-                        amount_xrp = float(taker_pays) / 10_000_000
+                        amount_xrp = float(taker_pays) / 1_000_000
                     except Exception:
                         amount_xrp = 0
                 elif isinstance(taker_gets, str):
-                    # TakerGets is XRP (in drops) — creator is selling tokens for XRP
                     try:
-                        amount_xrp = float(taker_gets) / 10_000_000
+                        amount_xrp = float(taker_gets) / 1_000_000
+                    except Exception:
+                        amount_xrp = 0
+            elif tx_type in ("AMMDeposit", "AMMWithdraw"):
+                amt = txn.get("Amount", txn.get("Amount2", "0"))
+                if isinstance(amt, str):
+                    try:
+                        amount_xrp = float(amt) / 1_000_000
                     except Exception:
                         amount_xrp = 0
             else:
-                # Payment: standard Amount field
                 amount = txn.get("Amount")
                 if isinstance(amount, str):
                     try:
-                        amount_xrp = float(amount) / 10_000_000
+                        amount_xrp = float(amount) / 1_000_000
                     except Exception:
                         amount_xrp = 0
-                else:
-                    amount_xrp = 0
 
             # Only process significant transactions
             xrp_price = TOKEN_PRICES.get("XRP", 0.5)
@@ -104,31 +105,42 @@ def on_xrp_message(ws, message):
             to_is_exchange = to_addr in xrp_exchange_addresses
             has_dest_tag = "DestinationTag" in txn
 
-            # OfferCreate = DEX trade on the XRP Ledger (actual buy/sell signal)
-            if tx_type == "OfferCreate":
-                # TakerPays = what the offer creator wants to receive
-                # If they pay XRP to get another token, it's a SELL of XRP
-                # If they pay another token to get XRP, it's a BUY of XRP
+            # Known payment channel / AMM addresses on XRPL
+            XRPL_AMM_INDICATORS = {"AMMDeposit", "AMMWithdraw", "AMMCreate", "AMMBid", "AMMVote"}
+
+            if tx_type in XRPL_AMM_INDICATORS:
+                if tx_type == "AMMWithdraw":
+                    classification = "SELL"
+                else:
+                    classification = "BUY"
+            elif tx_type == "OfferCreate":
                 taker_pays = txn.get("TakerPays", {})
                 taker_gets = txn.get("TakerGets", {})
-                if isinstance(taker_pays, str):  # XRP is represented as string (drops)
-                    classification = "SELL"  # Paying XRP
+                if isinstance(taker_pays, str):
+                    classification = "SELL"
                 elif isinstance(taker_gets, str):
-                    classification = "BUY"   # Receiving XRP
+                    classification = "BUY"
                 else:
-                    classification = "TRANSFER"  # Token-for-token
+                    classification = "TRANSFER"
             elif from_is_exchange and not to_is_exchange:
-                classification = "BUY"  # Withdrawal from exchange
+                classification = "BUY"
             elif to_is_exchange and not from_is_exchange:
-                classification = "SELL"  # Deposit to exchange
-            elif from_is_exchange and to_is_exchange:
-                classification = "TRANSFER"  # Exchange internal
-            elif has_dest_tag and not from_is_exchange:
-                # DestinationTag strongly signals exchange deposit (SELL)
                 classification = "SELL"
-            elif not has_dest_tag and usd_value > 500_000:
-                # Very large XRP without DestinationTag = likely OTC/treasury
+            elif from_is_exchange and to_is_exchange:
                 classification = "TRANSFER"
+            elif has_dest_tag and not from_is_exchange:
+                classification = "SELL"
+            elif not has_dest_tag and to_is_exchange:
+                classification = "SELL"
+            elif not has_dest_tag and not from_is_exchange and not to_is_exchange:
+                if usd_value >= 100_000:
+                    # Large XRP payment without DestinationTag between wallets
+                    # = likely OTC/institutional movement — signal as BUY (accumulation)
+                    classification = "BUY"
+                elif usd_value >= 50_000:
+                    classification = "BUY"
+                else:
+                    classification = "TRANSFER"
             else:
                 classification = "TRANSFER"
 

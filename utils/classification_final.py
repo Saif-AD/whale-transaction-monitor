@@ -379,7 +379,7 @@ class CEXClassificationEngine(BaseAnalysisEngine):
                 )
             
             # 🔧 FALLBACK: Legacy hardcoded CEX check (maintained for compatibility)
-            legacy_result = self._check_hardcoded_cex_addresses(from_addr_norm, to_addr_norm)
+            legacy_result = self._check_hardcoded_cex_addresses(from_addr_norm, to_addr_norm, blockchain)
             if legacy_result:
                 classification, confidence, evidence = legacy_result
                 # Boost confidence for known hardcoded exchanges
@@ -410,43 +410,40 @@ class CEXClassificationEngine(BaseAnalysisEngine):
                 AnalysisPhase.CEX_CLASSIFICATION.value
             )
     
-    def _check_hardcoded_cex_addresses(self, from_addr: str, to_addr: str) -> Optional[Tuple[ClassificationType, float, List[str]]]:
-        """Check hardcoded CEX address lists with DEX exclusion."""
+    def _check_hardcoded_cex_addresses(self, from_addr: str, to_addr: str, blockchain: str = "ethereum") -> Optional[Tuple[ClassificationType, float, List[str]]]:
+        """Check hardcoded CEX address lists with DEX exclusion.  Chain-aware."""
         try:
-            # CRITICAL FIX: First check if these are DEX addresses
             dex_protocols = {
                 "0x7a250d5630b4cf539739df2c5dacb4c659f2488d": "Uniswap V2 Router",
-                "0xe592427a0aece92de3edee1f18e0157c05861564": "Uniswap V3 Router", 
+                "0xe592427a0aece92de3edee1f18e0157c05861564": "Uniswap V3 Router",
                 "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45": "Uniswap V3 Router 2",
                 "0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f": "SushiSwap Router",
                 "0x1111111254fb6c44bac0bed2854e76f90643097d": "1inch V4 Router",
                 "0xdef171fe48cf0115b1d80b88dc8eab59176fee57": "ParaSwap V5",
-                "0xdef1c0ded9bec7f1a1670819833240f027b25eff": "0x Protocol"
+                "0xdef1c0ded9bec7f1a1670819833240f027b25eff": "0x Protocol",
             }
-            
-            # If either address is a DEX, return None (no CEX classification)
+
             if from_addr.lower() in dex_protocols or to_addr.lower() in dex_protocols:
-                self.logger.debug(f"DEX address detected: {from_addr} -> {to_addr}, skipping CEX classification")
                 return None
-            
-            # Check if from_addr is a known exchange (actual CEX only)
-            if from_addr in known_exchange_addresses:
-                exchange_name = known_exchange_addresses[from_addr]
-                classification = ClassificationType.BUY
-                confidence = 0.80
-                evidence = [f"Hardcoded CEX: Buying from {exchange_name}"]
-                return classification, confidence, evidence
-            
-            # Check if to_addr is a known exchange (actual CEX only)
-            if to_addr in known_exchange_addresses:
-                exchange_name = known_exchange_addresses[to_addr]
-                classification = ClassificationType.SELL
-                confidence = 0.80
-                evidence = [f"Hardcoded CEX: Selling to {exchange_name}"]
-                return classification, confidence, evidence
-            
+
+            # Build chain-aware lookup: merge EVM globals + chain-specific sets
+            chain = (blockchain or "ethereum").lower()
+            cex_lookup = dict(known_exchange_addresses)
+            if chain == "solana":
+                cex_lookup.update(solana_exchange_addresses)
+            elif chain == "xrp":
+                cex_lookup.update(xrp_exchange_addresses)
+
+            if from_addr in cex_lookup:
+                exchange_name = cex_lookup[from_addr]
+                return ClassificationType.BUY, 0.80, [f"Hardcoded CEX: Buying from {exchange_name}"]
+
+            if to_addr in cex_lookup:
+                exchange_name = cex_lookup[to_addr]
+                return ClassificationType.SELL, 0.80, [f"Hardcoded CEX: Selling to {exchange_name}"]
+
             return None
-            
+
         except Exception as e:
             self.logger.warning(f"Hardcoded CEX check failed: {e}")
             return None
@@ -5144,79 +5141,85 @@ def analyze_address_characteristics(address: str, blockchain: str = "ethereum") 
 
 def enhanced_solana_classification(owner: str, prev_owner: Optional[str], amount_change: float, tx_hash: str, token: str, source: str = "solana") -> tuple:
     """
-    Enhanced Solana transaction classification function
-    
-    Args:
-        owner: Current token owner address
-        prev_owner: Previous token owner address (can be None)
-        amount_change: Change in token amount
-        tx_hash: Transaction hash
-        token: Token symbol
-        source: Source identifier (default: "solana")
-        
+    Enhanced Solana transaction classification function.
+
+    Checks Solana-specific CEX/DEX address databases first for fast, high-confidence
+    classification, then falls back to the comprehensive engine and amount-change heuristics.
+
     Returns:
         Tuple of (classification, confidence) where:
         - classification: "buy", "sell", or "transfer"
         - confidence: confidence score (0-10)
     """
     try:
-        # Create transaction data for comprehensive analysis
+        from_addr = prev_owner or ''
+        to_addr = owner or ''
+
+        # --- Fast path: Solana-specific CEX/DEX address check ---
+        from_is_cex = from_addr in solana_exchange_addresses
+        to_is_cex = to_addr in solana_exchange_addresses
+        from_is_dex = from_addr in SOLANA_DEX_ADDRESSES
+        to_is_dex = to_addr in SOLANA_DEX_ADDRESSES
+
+        if from_is_cex and not to_is_cex:
+            return 'buy', 8
+        if to_is_cex and not from_is_cex:
+            return 'sell', 8
+        if from_is_dex and not to_is_dex:
+            return 'buy', 7
+        if to_is_dex and not from_is_dex:
+            return 'sell', 7
+
+        # --- Comprehensive engine fallback ---
         transaction_data = {
             'chain': 'solana',
             'blockchain': 'solana',
             'hash': tx_hash,
-            'from_address': prev_owner or '',
-            'to_address': owner,
-            'value_usd': abs(amount_change) * 1000,  # Rough estimate for analysis
+            'from_address': from_addr,
+            'to_address': to_addr,
+            'value_usd': abs(amount_change) * 1000,
             'token_symbol': token,
-            'amount_change': amount_change
+            'amount_change': amount_change,
         }
-        
-        # Use global whale engine (avoid re-init)
+
         global _GLOBAL_WHALE_ENGINE
         if _GLOBAL_WHALE_ENGINE is None:
             _GLOBAL_WHALE_ENGINE = WhaleIntelligenceEngine()
         result = _GLOBAL_WHALE_ENGINE.analyze_transaction_comprehensive(transaction_data)
-        
-        # Extract classification and confidence
+
         classification = result.classification.value.lower()
         confidence_score = result.confidence
-        
-        # Map classification to expected format
+
         if classification in ['dex_swap_buy', 'buy']:
             final_classification = 'buy'
         elif classification in ['dex_swap_sell', 'sell']:
             final_classification = 'sell'
         else:
             final_classification = 'transfer'
-        
-        # Convert confidence to 0-10 scale (expected by the calling code)
+
         final_confidence = min(10, max(0, confidence_score * 10))
-        
-        # Simple heuristic based on amount change direction if comprehensive analysis fails
+
+        # --- Amount-change heuristic when engine confidence is too low ---
         if final_confidence < 1:
             if amount_change > 0:
                 final_classification = 'buy'
                 final_confidence = 3
             elif amount_change < 0:
-                final_classification = 'sell' 
+                final_classification = 'sell'
                 final_confidence = 3
             else:
                 final_classification = 'transfer'
                 final_confidence = 2
-        
+
         return final_classification, final_confidence
-        
+
     except Exception as e:
         logger.error(f"Error in enhanced_solana_classification: {e}")
-        
-        # Fallback classification based on amount change
         if amount_change > 0:
             return 'buy', 2
         elif amount_change < 0:
             return 'sell', 2
-        else:
-            return 'transfer', 1
+        return 'transfer', 1
 
 
 # =============================================================================
