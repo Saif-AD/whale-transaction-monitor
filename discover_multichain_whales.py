@@ -2,7 +2,7 @@
 """
 Multi-Chain Whale Address Discovery
 
-Discovers whale addresses for underserved chains (Solana, XRP, Tron, Polygon)
+Discovers whale addresses for underserved chains (Solana, XRP, Polygon)
 using chain-specific APIs and known entity lists, then upserts to Supabase.
 """
 
@@ -104,34 +104,6 @@ KNOWN_XRP_ENTITIES = [
     {"address": "rPsmHjpEhtTjBTEnNJC22GDXLBR2gYxzEu", "entity_name": "B2C2", "label": "B2C2 OTC", "address_type": "market_maker"},
 ]
 
-KNOWN_TRON_ENTITIES = [
-    # CEX
-    {"address": "TMuA6YqfCeX8EhbfYEg5y7S4DqzSJireY9", "entity_name": "Binance", "label": "Binance Hot Wallet", "address_type": "CEX"},
-    {"address": "TV6MuMXfmLbBqPZvBHdwFsDnQeVfnmiuSi", "entity_name": "Binance", "label": "Binance Cold Wallet", "address_type": "CEX"},
-    {"address": "TAzsQ9Gx8eqFNFSKbeXrbi45CuVPHzA8wr", "entity_name": "Binance", "label": "Binance Hot Wallet 2", "address_type": "CEX"},
-    {"address": "TKEiz1gUvHuaRbPKm3WPGRD4f2Lfou3hak", "entity_name": "OKX", "label": "OKX Hot Wallet", "address_type": "CEX"},
-    {"address": "TN5xabJPn3tY3VajBeRYaffMo9qMiEABmn", "entity_name": "OKX", "label": "OKX Cold Wallet", "address_type": "CEX"},
-    {"address": "TJDENsfBJs4RFETt1X1W8wMDc8M5XnKhCM", "entity_name": "Huobi (HTX)", "label": "HTX Hot Wallet", "address_type": "CEX"},
-    {"address": "TYASr5UV6HEcXatwdFQfmLVUqQQQMUxHLS", "entity_name": "Huobi (HTX)", "label": "HTX Hot Wallet 2", "address_type": "CEX"},
-    {"address": "TKqvrVDfhGnxrAotEYfYYdWjgYrx1mSLUz", "entity_name": "Kraken", "label": "Kraken Hot Wallet", "address_type": "CEX"},
-    {"address": "TLyqzVGLV1srkB7dToTAEQgzE2CjGSF3nj", "entity_name": "Bybit", "label": "Bybit Hot Wallet", "address_type": "CEX"},
-    {"address": "TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb", "entity_name": "Bitfinex", "label": "Bitfinex Hot Wallet", "address_type": "CEX"},
-    {"address": "TDqSquXBgUCLYvYC4XZgrprLK589dkhSCf", "entity_name": "Gate.io", "label": "Gate.io Hot Wallet", "address_type": "CEX"},
-    {"address": "TSBgh2VoVj5NkH2ppCjiQBGqpQCjCFEeEf", "entity_name": "KuCoin", "label": "KuCoin Hot Wallet", "address_type": "CEX"},
-    {"address": "TCYo18r47aGirAvJTVPxiLVm6oP4yVaBzR", "entity_name": "Crypto.com", "label": "Crypto.com Hot Wallet", "address_type": "CEX"},
-    {"address": "TDWBTznnpTCMMMaKn7FTDAxa2moHRBYRHr", "entity_name": "Poloniex", "label": "Poloniex Hot Wallet", "address_type": "CEX"},
-    # Protocol / Foundation
-    {"address": "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7", "entity_name": "TRON Foundation", "label": "TRON Foundation", "address_type": "foundation"},
-    {"address": "THPvaUhoh2Qn2y9THCZML3H4ABt63ixipX", "entity_name": "TRON Foundation", "label": "TRON Super Representative", "address_type": "foundation"},
-    {"address": "TSSMHYeV2uE9qYH95DqyoCuBAzRARhmczq", "entity_name": "SunSwap", "label": "SunSwap Router", "address_type": "DEX"},
-    {"address": "TKcnKP1ZgKQMuuBZPaiS2hcdEUz5LVJqgF", "entity_name": "JustLend", "label": "JustLend DAO", "address_type": "DeFi"},
-    {"address": "TPYmHEhy5n8TCEfYGqW2rPxsghSfzghPDn", "entity_name": "USDD", "label": "USDD Stablecoin", "address_type": "stablecoin"},
-    {"address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", "entity_name": "Tether", "label": "USDT TRC-20 Contract", "address_type": "stablecoin"},
-    # Major whale accounts
-    {"address": "TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE", "entity_name": "Justin Sun", "label": "Justin Sun Wallet", "address_type": "whale"},
-    {"address": "TGj1Ej1qRzL9feLTLO73w2dbGhTrpAgjVc", "entity_name": "Justin Sun", "label": "Justin Sun Poloniex", "address_type": "whale"},
-]
-
 
 # ============================================================================
 # Solana: Discover whale wallets from DeFi token top holders
@@ -226,50 +198,6 @@ def discover_solana_token_holders() -> List[Dict[str, Any]]:
 
     return records
 
-
-# ============================================================================
-# Tron: Discover via TronScan API
-# ============================================================================
-
-def discover_tron_top_holders() -> List[Dict[str, Any]]:
-    """Discover top TRX holders via TronScan API."""
-    records = []
-    seen = set()
-
-    for sort_field in ["balance", "power"]:
-        try:
-            r = requests.get(
-                "https://apilist.tronscanapi.com/api/account/list",
-                params={"sort": f"-{sort_field}", "limit": 200, "start": 0},
-                timeout=15,
-            )
-            if r.status_code != 200:
-                log.warning(f"TronScan {sort_field}: HTTP {r.status_code}")
-                continue
-            data = r.json()
-            accounts = data.get("data", [])
-            log.info(f"TronScan top by {sort_field}: {len(accounts)} accounts")
-            for a in accounts:
-                addr = a.get("address", "")
-                if not addr or addr in seen:
-                    continue
-                seen.add(addr)
-                balance_trx = a.get("balance", 0) / 1e6
-                records.append({
-                    "address": addr,
-                    "blockchain": "tron",
-                    "label": f"Top TRX Account (rank by {sort_field})",
-                    "address_type": "whale",
-                    "confidence": 0.55,
-                    "source": "tronscan_top_accounts",
-                    "detection_method": "tronscan_rich_list",
-                    "balance_native": balance_trx,
-                    "balance_usd": balance_trx * 0.12,
-                })
-        except Exception as e:
-            log.warning(f"TronScan {sort_field}: {e}")
-
-    return records
 
 
 # ============================================================================
@@ -442,31 +370,6 @@ def main():
     upserted = upsert_records(sb, xrp_records, "xrp")
     log.info(f"  [xrp] Known entities: {upserted} upserted / {len(xrp_records)} total")
     stats["xrp_entities"] = upserted
-
-    # --- TRON: Known entities ---
-    print("\n--- TRON: Known Entities ---")
-    tron_entity_records = []
-    for ent in KNOWN_TRON_ENTITIES:
-        tron_entity_records.append({
-            "address": ent["address"],
-            "blockchain": "tron",
-            "label": ent["label"],
-            "address_type": ent["address_type"],
-            "entity_name": ent["entity_name"],
-            "confidence": 0.90,
-            "source": "known_entity_list",
-            "detection_method": "manual_curated",
-        })
-    upserted = upsert_records(sb, tron_entity_records, "tron")
-    log.info(f"  [tron] Known entities: {upserted} upserted / {len(tron_entity_records)} total")
-    stats["tron_entities"] = upserted
-
-    # --- TRON: TronScan discovery ---
-    print("\n--- TRON: TronScan Discovery ---")
-    tron_scan_records = discover_tron_top_holders()
-    upserted = upsert_records(sb, tron_scan_records, "tron")
-    log.info(f"  [tron] TronScan discovered: {upserted} upserted / {len(tron_scan_records)} found")
-    stats["tron_scan"] = upserted
 
     # --- POLYGON: Name top unnamed addresses ---
     print("\n--- POLYGON: Balance Check for Top Unnamed ---")
