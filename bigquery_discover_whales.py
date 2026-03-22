@@ -527,6 +527,8 @@ def process_chain(bq_client: bigquery.Client, sb, chain: str, dry_run: bool = Fa
 
 
 def main():
+    global MAX_RESULTS_PER_CHAIN
+
     parser = argparse.ArgumentParser(description="BigQuery Verified Whale Discovery")
     parser.add_argument("--chains", nargs="+", default=list(CHAIN_CONFIGS.keys()),
                         choices=list(CHAIN_CONFIGS.keys()),
@@ -537,7 +539,6 @@ def main():
                         help=f"Max results per chain (default: {MAX_RESULTS_PER_CHAIN})")
     args = parser.parse_args()
 
-    global MAX_RESULTS_PER_CHAIN
     MAX_RESULTS_PER_CHAIN = args.limit
 
     print("=" * 70)
