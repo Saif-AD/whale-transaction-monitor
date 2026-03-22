@@ -387,6 +387,7 @@ TOKEN_PRICES = {
     
     # Polygon token prices
     "WMATIC": 1.0,
+    "USDC.e": 1.00,
     "GHST": 1.2,
     "QUICK": 0.05,
     "DQUICK": 0.1,
