@@ -126,21 +126,24 @@ class TransactionDeduplicator:
                 return False
 
             # Same-destination same-amount: different senders depositing the
-            # same amount to the same address within 5 minutes — visually
-            # spammy (common on XRP/BTC with round-number exchange deposits)
+            # same amount to the same address within a short window.
+            # Use tighter window for XRP/BTC (30s) vs Solana/EVM (300s)
+            # because round-number deposits to exchanges are common and legit.
+            same_dest_window = 30 if chain in ('xrp', 'bitcoin') else 300
             if (amount_similar and
                 to_addr and tx.get('to') == to_addr and
                 tx.get('from') != from_addr and
-                current_time - tx_time < 300):
+                current_time - tx_time < same_dest_window):
                 self.stats['circular_flows_caught'] += 1
                 self.stats['by_chain'][chain]['circular'] += 1
                 return False
 
             # Chained transfer: A→B then B→C with same amount (tumbling/wash).
             # The new event's `from` matches a recent event's `to`.
+            chain_window = 60 if chain in ('xrp', 'bitcoin') else 300
             if (amount_similar and
                 from_addr and tx.get('to') == from_addr and
-                current_time - tx_time < 300):
+                current_time - tx_time < chain_window):
                 self.stats['circular_flows_caught'] += 1
                 self.stats['by_chain'][chain]['circular'] += 1
                 return False
@@ -148,8 +151,10 @@ class TransactionDeduplicator:
             # Same-amount flood: bot farms distributing identical amounts
             # across many unique wallet pairs (e.g. 511.80 SOL x 20).
             # All different addresses, but same chain+symbol+amount.
-            # Tight 2-minute window to avoid suppressing legitimate transfers.
-            if (amount_similar and
+            # Only for Solana/EVM — XRP and Bitcoin have naturally repetitive
+            # round amounts (10K XRP, 1 BTC) that are legitimate distinct txs.
+            if (chain not in ('xrp', 'bitcoin') and
+                amount_similar and
                 current_time - tx_time < 120):
                 self.stats['circular_flows_caught'] += 1
                 self.stats['by_chain'][chain]['circular'] += 1
