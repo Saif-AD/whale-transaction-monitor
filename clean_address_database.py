@@ -2,266 +2,310 @@
 """
 Address Database Cleaner
 
-Scans Supabase addresses table and removes junk:
-  1. Empty addresses: no entity_name, no balance, no useful data
-  2. Duplicates: same address on same chain (keeps highest confidence)
-  3. Dead labels: addresses with auto-generated labels like "Verified Whale"
-     but no actual identity or balance data
-  4. Low confidence: addresses below threshold with no other redeeming quality
-  5. Stale addresses: old entries with no recent activity data
+Identifies and removes junk/duplicate entries from the Supabase `addresses`
+table that were inserted by old flooding scripts (bigquery_multichain_discovery,
+whale_discovery_agent, bigquery_crosschain_verified_whales).
 
-Safe to run multiple times. Shows what it will delete before doing it.
-Requires explicit confirmation before any deletion.
+Safety:
+  - Addresses WITH a real entity_name are NEVER deleted.
+  - Addresses with significant balance (>= $1,000 in analysis_tags) are kept.
+  - Requires explicit "yes" confirmation before deleting anything.
+  - Duplicates are resolved by keeping the row with highest confidence / best data.
 """
 
-import sys
+import argparse
 import json
-import time
-from datetime import datetime
+import logging
+import re
+import sys
 from collections import defaultdict
+from datetime import datetime
+from typing import Any, Dict, List, Set, Tuple
 
 from supabase import create_client
-from config.api_keys import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 
-BATCH_SIZE = 200
+from config.api_keys import SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("cleaner")
+
+# ---------------------------------------------------------------------------
 # Junk detection patterns
-GARBAGE_LABELS = [
-    'High-Activity Exchange Wallet',
-    'DEX Router/Pool',
-    'Verified Whale',
-    'Cross-Chain Verified Whale',
-    'Bridge Whale',
-    'Stablecoin Whale',
-    'Smart Money',
-    'Volume Whale',
+# ---------------------------------------------------------------------------
+
+JUNK_SOURCE_PATTERNS = [
+    r"^bigquery_.*_pattern$",
+    r"^bigquery_.*_verification$",
+    r"^bigquery_crosschain_verified",
+    r"^bigquery_multichain",
+    r"^whale_discovery_agent",
 ]
 
-# Sources from the old flooding scripts
-JUNK_SOURCES = [
-    'bigquery_ethereum_cex_pattern',
-    'bigquery_ethereum_dex_pattern',
-    'bigquery_ethereum_whale_verification',
-    'bigquery_polygon_cex_pattern',
-    'bigquery_polygon_dex_pattern',
-    'bigquery_polygon_whale_verification',
-    'bigquery_bsc_cex_pattern',
-    'bigquery_bsc_dex_pattern',
-    'bigquery_bsc_whale_verification',
-    'bigquery_bitcoin_cex_pattern',
-    'bigquery_bitcoin_whale_verification',
-    'bigquery_crosschain_verified',
-]
+JUNK_LABELS = {
+    "verified whale",
+    "smart money",
+    "dex router/pool",
+    "dex router",
+    "bridge whale",
+    "stablecoin whale",
+    "high-activity exchange wallet",
+    "volume whale",
+    "cross-chain verified whale",
+    "cross-chain whale",
+    "multi-chain whale",
+    "active whale",
+    "whale",
+}
 
-# Minimum confidence for addresses with no entity_name and no balance
-MIN_UNNAMED_CONFIDENCE = 0.70
-
-
-def get_supabase():
-    return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+MIN_BALANCE_TO_KEEP = 1_000  # USD
 
 
-def fetch_all_addresses(sb):
-    """Fetch all addresses from Supabase in pages."""
+def _is_junk_source(source: str) -> bool:
+    if not source:
+        return False
+    for pat in JUNK_SOURCE_PATTERNS:
+        if re.match(pat, source, re.IGNORECASE):
+            return True
+    return False
+
+
+def _is_junk_label(label: str) -> bool:
+    if not label:
+        return False
+    return label.strip().lower() in JUNK_LABELS
+
+
+def _get_balance_usd(row: Dict) -> float:
+    tags = row.get("analysis_tags")
+    if not tags:
+        return 0.0
+    if isinstance(tags, str):
+        try:
+            tags = json.loads(tags)
+        except (json.JSONDecodeError, TypeError):
+            return 0.0
+    if isinstance(tags, dict):
+        return float(tags.get("balance_usd", 0) or 0)
+    return 0.0
+
+
+def _row_quality_score(row: Dict) -> Tuple:
+    """Higher is better. Used to pick the best row among duplicates."""
+    has_name = 1 if row.get("entity_name") else 0
+    conf = float(row.get("confidence") or 0)
+    bal = _get_balance_usd(row)
+    verified = 1 if row.get("is_verified") else 0
+    return (has_name, conf, bal, verified)
+
+
+# ---------------------------------------------------------------------------
+# Fetch all addresses
+# ---------------------------------------------------------------------------
+
+PAGE_SIZE = 1000
+
+
+def fetch_all_addresses(sb) -> List[Dict]:
+    """Paginate through the entire addresses table."""
     all_rows = []
-    page_size = 1000
     offset = 0
-
-    print("  Loading addresses from Supabase...")
     while True:
-        result = (sb.table('addresses')
-                  .select('id, address, blockchain, address_type, label, '
-                          'entity_name, confidence, balance_usd, balance_native, '
-                          'source, detection_method')
-                  .range(offset, offset + page_size - 1)
-                  .execute())
-        if not result.data:
+        resp = (
+            sb.table("addresses")
+            .select("*")
+            .range(offset, offset + PAGE_SIZE - 1)
+            .execute()
+        )
+        batch = resp.data or []
+        if not batch:
             break
-        all_rows.extend(result.data)
-        offset += page_size
-        if len(result.data) < page_size:
+        all_rows.extend(batch)
+        offset += len(batch)
+        if len(batch) < PAGE_SIZE:
             break
-
-    print(f"  Loaded {len(all_rows):,} addresses")
+        if offset % 10_000 == 0:
+            log.info(f"  Fetched {offset:,} rows...")
     return all_rows
 
 
-def find_junk(rows):
+# ---------------------------------------------------------------------------
+# Analysis
+# ---------------------------------------------------------------------------
+
+def analyze(rows: List[Dict]) -> Tuple[List[Dict], List[Dict], List[Dict]]:
     """
-    Identify junk addresses. Returns list of (id, reason) tuples.
-    An address is junk if ALL of these are true:
-    - No entity_name (we don't know who it is)
-    - No meaningful balance (balance_usd is null or < $1000)
-    - Source is from a known junk source OR label is auto-generated
+    Returns (junk_rows, duplicate_rows_to_delete, kept_rows).
     """
-    junk = []
-    reasons = defaultdict(int)
+    junk: List[Dict] = []
+    kept: List[Dict] = []
 
     for row in rows:
-        row_id = row['id']
-        entity_name = row.get('entity_name')
-        balance_usd = float(row.get('balance_usd') or 0)
-        label = row.get('label') or ''
-        source = row.get('source') or ''
-        confidence = float(row.get('confidence') or 0)
-
-        # Skip if it has a real identity
+        entity_name = row.get("entity_name")
         if entity_name and entity_name.strip():
+            kept.append(row)
             continue
 
-        # Skip if it has meaningful balance
-        if balance_usd >= 1000:
+        balance = _get_balance_usd(row)
+        if balance >= MIN_BALANCE_TO_KEEP:
+            kept.append(row)
             continue
 
-        # Check: from a known junk source?
-        is_junk_source = source in JUNK_SOURCES
+        source = row.get("source") or ""
+        label = row.get("label") or ""
 
-        # Check: auto-generated label?
-        is_garbage_label = any(label.startswith(g) for g in GARBAGE_LABELS)
+        if _is_junk_source(source) or _is_junk_label(label):
+            junk.append(row)
+        else:
+            kept.append(row)
 
-        # Check: low confidence with no identity
-        is_low_conf_unnamed = confidence < MIN_UNNAMED_CONFIDENCE
+    # Duplicate detection among kept rows
+    groups: Dict[str, List[Dict]] = defaultdict(list)
+    for row in kept:
+        key = (row.get("address", "").lower(), row.get("blockchain", ""))
+        groups[f"{key[0]}|{key[1]}"].append(row)
 
-        if is_junk_source:
-            junk.append((row_id, f"junk_source:{source}"))
-            reasons['junk_source'] += 1
-        elif is_garbage_label:
-            junk.append((row_id, f"garbage_label:{label[:50]}"))
-            reasons['garbage_label'] += 1
-        elif is_low_conf_unnamed:
-            junk.append((row_id, f"low_conf_unnamed:{confidence:.2f}"))
-            reasons['low_conf_unnamed'] += 1
+    dup_to_delete: List[Dict] = []
+    final_kept: List[Dict] = []
 
-    return junk, dict(reasons)
-
-
-def find_duplicates(rows):
-    """
-    Find duplicate addresses (same address+blockchain).
-    Keeps the one with highest confidence, marks rest for deletion.
-    """
-    groups = defaultdict(list)
-    for row in rows:
-        key = (row['address'].lower(), row['blockchain'])
-        groups[key].append(row)
-
-    dupes = []
     for key, group in groups.items():
         if len(group) <= 1:
+            final_kept.extend(group)
             continue
-        # Sort by: has entity_name first, then confidence desc
-        group.sort(key=lambda r: (
-            bool(r.get('entity_name')),
-            float(r.get('confidence') or 0),
-            float(r.get('balance_usd') or 0),
-        ), reverse=True)
-        # Keep first, mark rest as dupes
-        for r in group[1:]:
-            dupes.append((r['id'], f"duplicate_of:{group[0]['id']}"))
+        group.sort(key=_row_quality_score, reverse=True)
+        final_kept.append(group[0])
+        dup_to_delete.extend(group[1:])
 
-    return dupes
+    return junk, dup_to_delete, final_kept
 
 
-def delete_batch(sb, ids):
-    """Delete addresses by ID in batches."""
+# ---------------------------------------------------------------------------
+# Deletion
+# ---------------------------------------------------------------------------
+
+DELETE_BATCH = 50
+
+
+def delete_rows(sb, rows: List[Dict], label: str) -> int:
     deleted = 0
-    for i in range(0, len(ids), BATCH_SIZE):
-        batch = ids[i:i + BATCH_SIZE]
+    ids = [r["id"] for r in rows if r.get("id")]
+    for i in range(0, len(ids), DELETE_BATCH):
+        batch_ids = ids[i : i + DELETE_BATCH]
         try:
-            sb.table('addresses').delete().in_('id', batch).execute()
-            deleted += len(batch)
+            sb.table("addresses").delete().in_("id", batch_ids).execute()
+            deleted += len(batch_ids)
         except Exception as e:
-            print(f"    Delete error: {e}")
+            log.error(f"Delete batch failed: {e}")
+            for rid in batch_ids:
+                try:
+                    sb.table("addresses").delete().eq("id", rid).execute()
+                    deleted += 1
+                except Exception as e2:
+                    log.error(f"  Single delete failed (id={rid}): {e2}")
+
+        if (i + DELETE_BATCH) % 500 == 0:
+            log.info(f"  [{label}] Deleted {deleted:,}/{len(ids):,}")
+
     return deleted
 
 
-def main():
-    sb = get_supabase()
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
-    before = sb.table('addresses').select('id', count='exact').execute()
-    before_named = (sb.table('addresses').select('id', count='exact')
-                    .not_.is_('entity_name', 'null').execute())
+def main():
+    parser = argparse.ArgumentParser(description="Clean junk/duplicate addresses from Supabase")
+    parser.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
+    parser.add_argument("--dry-run", action="store_true", help="Analyze only, don't delete")
+    args = parser.parse_args()
+
+    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
     print("=" * 70)
     print("  ADDRESS DATABASE CLEANER")
     print("=" * 70)
-    print(f"  Total addresses:  {before.count:,}")
-    print(f"  With entity_name: {before_named.count:,}")
-    print(f"  Without name:     {before.count - before_named.count:,}")
-    print("=" * 70)
+    print(f"  Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print()
 
+    log.info("Fetching all addresses from Supabase...")
     rows = fetch_all_addresses(sb)
-    if not rows:
-        print("  No addresses found. Nothing to clean.")
-        return
+    log.info(f"Fetched {len(rows):,} total addresses")
 
-    # Find junk
-    print("\n  Scanning for junk addresses...")
-    junk, junk_reasons = find_junk(rows)
-    print(f"  Found {len(junk):,} junk addresses:")
-    for reason, count in sorted(junk_reasons.items(), key=lambda x: -x[1]):
-        print(f"    {reason}: {count:,}")
+    junk, dups, kept = analyze(rows)
 
-    # Find duplicates
-    print("\n  Scanning for duplicates...")
-    dupes = find_duplicates(rows)
-    print(f"  Found {len(dupes):,} duplicate entries")
-
-    # Combine
-    all_to_delete = {}
-    for row_id, reason in junk + dupes:
-        all_to_delete[row_id] = reason
-
-    total_delete = len(all_to_delete)
-    if total_delete == 0:
-        print("\n  Database is clean. Nothing to delete.")
-        return
-
-    print(f"\n  TOTAL to delete: {total_delete:,} / {len(rows):,} "
-          f"({total_delete / len(rows) * 100:.1f}%)")
-    print(f"  Will keep: {len(rows) - total_delete:,} addresses")
+    # Summarise
+    print()
+    print("=" * 70)
+    print("  ANALYSIS RESULTS")
+    print("=" * 70)
+    print(f"  Total addresses:            {len(rows):>8,}")
+    print(f"  Junk (to delete):           {len(junk):>8,}")
+    print(f"  Duplicates (to delete):     {len(dups):>8,}")
+    print(f"  Clean (to keep):            {len(kept):>8,}")
     print()
 
-    # Show sample of what will be deleted
-    print("  Sample deletions (first 10):")
-    for i, (row_id, reason) in enumerate(list(all_to_delete.items())[:10]):
-        matching = [r for r in rows if r['id'] == row_id]
-        if matching:
-            r = matching[0]
-            print(f"    [{reason}] {r['address'][:16]}... "
-                  f"({r['blockchain']}) label='{(r.get('label') or '')[:30]}' "
-                  f"balance=${float(r.get('balance_usd') or 0):,.0f}")
-    print()
+    # Breakdown by source pattern
+    source_counts: Dict[str, int] = defaultdict(int)
+    for r in junk:
+        source_counts[r.get("source") or "(empty)"] += 1
+    if source_counts:
+        print("  Junk breakdown by source:")
+        for src, cnt in sorted(source_counts.items(), key=lambda x: -x[1])[:15]:
+            print(f"    {src:45s} {cnt:>6,}")
+        print()
 
-    response = input(f"  Delete {total_delete:,} junk addresses? (yes/no): ")
-    if response.lower() != 'yes':
-        print("  Aborted.")
+    label_counts: Dict[str, int] = defaultdict(int)
+    for r in junk:
+        label_counts[r.get("label") or "(empty)"] += 1
+    if label_counts:
+        print("  Junk breakdown by label:")
+        for lbl, cnt in sorted(label_counts.items(), key=lambda x: -x[1])[:15]:
+            print(f"    {lbl:45s} {cnt:>6,}")
+        print()
+
+    chain_junk: Dict[str, int] = defaultdict(int)
+    for r in junk:
+        chain_junk[r.get("blockchain") or "unknown"] += 1
+    if chain_junk:
+        print("  Junk breakdown by chain:")
+        for ch, cnt in sorted(chain_junk.items(), key=lambda x: -x[1]):
+            print(f"    {ch:20s} {cnt:>8,}")
+        print()
+
+    total_to_delete = len(junk) + len(dups)
+    if total_to_delete == 0:
+        print("  Nothing to clean. Database looks good!")
         return
 
-    print(f"\n  Deleting {total_delete:,} addresses...")
-    ids_to_delete = list(all_to_delete.keys())
-    deleted = delete_batch(sb, ids_to_delete)
+    if args.dry_run:
+        print("  [DRY RUN] No changes made.")
+        return
 
-    after = sb.table('addresses').select('id', count='exact').execute()
-    after_named = (sb.table('addresses').select('id', count='exact')
-                   .not_.is_('entity_name', 'null').execute())
+    print(f"  Will delete {total_to_delete:,} rows total.")
+    print()
+
+    if not args.yes:
+        confirm = input("  Type 'yes' to proceed with deletion: ").strip().lower()
+        if confirm != "yes":
+            print("  Aborted.")
+            return
+
+    print()
+    deleted_junk = delete_rows(sb, junk, "junk")
+    deleted_dups = delete_rows(sb, dups, "duplicates")
 
     print()
     print("=" * 70)
     print("  CLEANUP COMPLETE")
     print("=" * 70)
-    print(f"  Deleted:     {deleted:,}")
-    print(f"  Before:      {before.count:,} ({before_named.count:,} named)")
-    print(f"  After:       {after.count:,} ({after_named.count:,} named)")
-    print(f"  Named ratio: {after_named.count / after.count * 100:.1f}% "
-          f"(was {before_named.count / before.count * 100:.1f}%)")
+    print(f"  Junk deleted:       {deleted_junk:>8,}")
+    print(f"  Duplicates deleted: {deleted_dups:>8,}")
+    print(f"  Rows remaining:     {len(rows) - deleted_junk - deleted_dups:>8,}")
     print("=" * 70)
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\nInterrupted.")
-        sys.exit(0)
+    main()

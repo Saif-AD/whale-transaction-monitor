@@ -68,6 +68,16 @@ POLYGON_DEFI_ADDRESSES = {
     '0xa0c68c638235ee32657e8f720a23cec1bfc77c77',  # Polygon PoS Bridge
     '0x40ec5b33f54e0e8a33a975908c5ba1c14e5bbbdf',  # Polygon Bridge Root
     '0x22f9dcf4647084d6c31b2765f6910cd85c178c18',  # Stargate Router
+    '0x3a23f943181408eac424116af7b7790c94cb97a5',  # Hop Protocol Bridge (Polygon)
+    '0x553bc791d746767166fa3888432038193ceed5e2',  # Hop Protocol ETH Bridge
+    '0xc30141b657f4216252dc59af2e7cdb9d8792e1b0',  # Socket/Bungee Bridge
+    '0x2791bca1f2de4661ed88a30c99a7a9449aa84174',  # USDC.e (Bridged USDC)
+    '0xe7cea2f6d7b120174bf3a9bc98efaf1ff72c997d',  # Across Bridge (Polygon)
+    '0x5768ab2809e6ea5427bab5ff801fecea8c5e5c23',  # deBridge Gate
+    '0x4d73adb72bc3dd368966edd0f0b2148401a178e2',  # Celer cBridge
+    '0xd6abe628fc06e98a367e0de1abf2fca5dd3b80f4',  # Synapse Bridge
+    '0x831753dd7087cac61ab5644b308642cc1c33dc13',  # Quickswap LP Staking
+    '0x1205f31718499dbf1fca446663b532ef87481fe1',  # Compound V3 comet (USDC)
 }
 
 # Build lookup tables

@@ -1,697 +1,585 @@
 #!/usr/bin/env python3
 """
-BigQuery Whale Discovery - All Chains, Quality Over Quantity
+BigQuery Verified Whale Discovery
 
-Covers: Ethereum, Polygon, Bitcoin, Solana, XRP
+Discovers high-volume addresses from BigQuery public blockchain datasets,
+verifies balances via chain-specific APIs, and upserts quality-gated records
+into the Supabase `addresses` table.
 
-Finds high-quality whale addresses from BigQuery public blockchain datasets.
-Every address must meet REAL thresholds before being inserted.
-
-Discovery methods:
-  1. Volume whales: addresses that moved serious value (not dust) recently
-  2. Smart money: addresses interacting with many DeFi protocols (EVM only)
-
-Quality gates:
-  - Minimum volume threshold per chain (100 ETH, 1 BTC, etc.)
-  - Minimum significant tx count: 5+
-  - Recent activity: last 180 days
-  - Excludes known CEX hot wallets
-  - Verified via chain explorer API (balance + contract check)
-  - Must have $100K+ balance OR a known contract label to pass
-
-Chain-specific notes:
-  - Bitcoin: UTXO model, uses outputs table, different address format
-  - Solana: account-based but different schema, uses Helius/Solscan for verify
-  - XRP: simple account model, limited verification (no explorer API with labels)
+Supported chains: Ethereum, Polygon, Bitcoin, Solana, XRP
 """
 
-import os
-import sys
-import time
+import argparse
 import json
 import logging
-import requests
-from datetime import datetime
+import sys
+import time
 from collections import defaultdict
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import requests
 from google.cloud import bigquery
+from google.oauth2 import service_account
 from supabase import create_client
+
 from config.api_keys import (
-    SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
-    ETHERSCAN_API_KEY, ETHERSCAN_API_KEYS,
-    POLYGONSCAN_API_KEY,
+    ETHERSCAN_API_KEYS,
+    GOOGLE_APPLICATION_CREDENTIALS,
+    GCP_PROJECT_ID,
     HELIUS_API_KEY,
-    SOLSCAN_API_KEY,
+    POLYGONSCAN_API_KEY,
+    SUPABASE_SERVICE_ROLE_KEY,
+    SUPABASE_URL,
 )
 
-logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("discover")
 
-# --- Config ---
-BIGQUERY_CREDENTIALS_PATH = "config/bigquery_credentials.json"
-BATCH_SIZE = 200
-API_DELAY = 0.22  # rate limit between API calls
+# ---------------------------------------------------------------------------
+# Chain configs
+# ---------------------------------------------------------------------------
 
-# Quality thresholds (per-chain overrides below)
-MIN_LARGE_TX_COUNT = 2
-RECENT_DAYS = 365
+CHAIN_CONFIGS: Dict[str, Dict[str, Any]] = {
+    "ethereum": {
+        "blockchain": "ethereum",
+        "table": "bigquery-public-data.crypto_ethereum.transactions",
+        "query_template": """
+            SELECT
+                address,
+                SUM(vol) AS total_volume,
+                COUNT(*) AS tx_count,
+                AVG(vol) AS avg_per_tx
+            FROM (
+                SELECT from_address AS address, value / POW(10, 18) AS vol
+                FROM `{table}`
+                WHERE block_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY)
+                  AND value / POW(10, 18) >= 0.5
+                UNION ALL
+                SELECT to_address AS address, value / POW(10, 18) AS vol
+                FROM `{table}`
+                WHERE block_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY)
+                  AND value / POW(10, 18) >= 0.5
+            )
+            GROUP BY address
+            HAVING total_volume >= {min_volume}
+               AND avg_per_tx >= {min_avg}
+               AND tx_count >= 2
+            ORDER BY total_volume DESC
+            LIMIT {limit}
+        """,
+        "min_volume": 10,
+        "min_avg": 0.5,
+        "native_symbol": "ETH",
+        "label_prefix": "High-Volume ETH Transactor",
+        "source": "bigquery_eth_volume_discovery",
+    },
+    "polygon": {
+        "blockchain": "polygon",
+        "table": "bigquery-public-data.crypto_polygon.transactions",
+        "query_template": """
+            SELECT
+                address,
+                SUM(vol) AS total_volume,
+                COUNT(*) AS tx_count,
+                AVG(vol) AS avg_per_tx
+            FROM (
+                SELECT from_address AS address, value / POW(10, 18) AS vol
+                FROM `{table}`
+                WHERE block_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY)
+                  AND value / POW(10, 18) >= 1000
+                UNION ALL
+                SELECT to_address AS address, value / POW(10, 18) AS vol
+                FROM `{table}`
+                WHERE block_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY)
+                  AND value / POW(10, 18) >= 1000
+            )
+            GROUP BY address
+            HAVING total_volume >= {min_volume}
+               AND avg_per_tx >= {min_avg}
+               AND tx_count >= 2
+            ORDER BY total_volume DESC
+            LIMIT {limit}
+        """,
+        "min_volume": 25000,
+        "min_avg": 1000,
+        "native_symbol": "MATIC",
+        "label_prefix": "High-Volume MATIC Transactor",
+        "source": "bigquery_polygon_volume_discovery",
+    },
+    "bitcoin": {
+        "blockchain": "bitcoin",
+        "table": "bigquery-public-data.crypto_bitcoin.transactions",
+        "query_template": """
+            SELECT
+                address,
+                SUM(btc_value) AS total_volume,
+                COUNT(*) AS tx_count,
+                AVG(btc_value) AS avg_per_tx
+            FROM (
+                SELECT
+                    outputs.addresses[OFFSET(0)] AS address,
+                    outputs.value / 1e8 AS btc_value
+                FROM `{table}`, UNNEST(outputs) AS outputs
+                WHERE block_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY)
+                  AND ARRAY_LENGTH(outputs.addresses) > 0
+                  AND outputs.value / 1e8 >= 0.1
+            )
+            GROUP BY address
+            HAVING total_volume >= {min_volume}
+               AND avg_per_tx >= {min_avg}
+               AND tx_count >= 2
+            ORDER BY total_volume DESC
+            LIMIT {limit}
+        """,
+        "min_volume": 1,
+        "min_avg": 0.1,
+        "native_symbol": "BTC",
+        "label_prefix": "High-Volume BTC Transactor",
+        "source": "bigquery_btc_volume_discovery",
+    },
+    "solana": {
+        "blockchain": "solana",
+        "table": "bigquery-public-data.crypto_solana_mainnet_us.Transactions",
+        "query_template": """
+            SELECT
+                signer AS address,
+                COUNT(*) AS tx_count,
+                0 AS total_volume,
+                0 AS avg_per_tx
+            FROM `{table}`,
+                 UNNEST(signers) AS signer
+            WHERE block_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY)
+              AND err IS NULL
+            GROUP BY signer
+            HAVING tx_count >= {min_tx_count}
+            ORDER BY tx_count DESC
+            LIMIT {limit}
+        """,
+        "min_volume": 100,
+        "min_avg": 0,
+        "min_tx_count": 20,
+        "native_symbol": "SOL",
+        "label_prefix": "High-Activity SOL Transactor",
+        "source": "bigquery_solana_activity_discovery",
+    },
+    "xrp": {
+        "blockchain": "xrp",
+        "table": "bigquery-public-data.crypto_xrp.transactions",
+        "query_template": """
+            SELECT
+                Account AS address,
+                SUM(SAFE_CAST(Amount AS FLOAT64) / 1e6) AS total_volume,
+                COUNT(*) AS tx_count,
+                AVG(SAFE_CAST(Amount AS FLOAT64) / 1e6) AS avg_per_tx
+            FROM `{table}`
+            WHERE TransactionType = 'Payment'
+              AND ledger_close_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY)
+              AND SAFE_CAST(Amount AS FLOAT64) / 1e6 >= 5000
+            GROUP BY Account
+            HAVING total_volume >= {min_volume}
+               AND avg_per_tx >= {min_avg}
+               AND tx_count >= 2
+            ORDER BY total_volume DESC
+            LIMIT {limit}
+        """,
+        "min_volume": 50000,
+        "min_avg": 5000,
+        "native_symbol": "XRP",
+        "label_prefix": "High-Volume XRP Transactor",
+        "source": "bigquery_xrp_volume_discovery",
+    },
+}
+
+MAX_RESULTS_PER_CHAIN = 10_000
 MIN_BALANCE_USD = 10_000
-MAX_RESULTS_PER_QUERY = 10_000
 
-# --- Chain configs ---
-# Each chain has:
-#   dataset: BigQuery public dataset name
-#   model: 'evm' (from_address/to_address/value) or 'utxo' (inputs/outputs) or 'custom'
-#   min_tx_value: minimum value per tx to count (in native units)
-#   min_volume: minimum total volume to qualify (in native units)
-#   native_price_usd: approximate price for USD estimates
-#   verify_fn: function name for verification (or None to skip)
-
-CHAINS = {
-    'ethereum': {
-        'dataset': 'crypto_ethereum',
-        'model': 'evm',
-        'decimals': 18,
-        'native_symbol': 'ETH',
-        'native_price_usd': 3000,
-        'min_tx_value': 0.5,     # 0.5 ETH (~$1.5K) per tx
-        'min_volume': 10,        # 10 ETH (~$30K) total
-        'explorer_url': 'https://api.etherscan.io/api',
-        'explorer_key': ETHERSCAN_API_KEY,
-    },
-    'polygon': {
-        'dataset': 'crypto_polygon',
-        'model': 'evm',
-        'decimals': 18,
-        'native_symbol': 'MATIC',
-        'native_price_usd': 0.8,
-        'min_tx_value': 1000,    # 1000 MATIC (~$800)
-        'min_volume': 25_000,    # 25K MATIC (~$20K)
-        'explorer_url': 'https://api.polygonscan.com/api',
-        'explorer_key': POLYGONSCAN_API_KEY,
-    },
-    'bitcoin': {
-        'dataset': 'crypto_bitcoin',
-        'model': 'utxo',
-        'decimals': 8,
-        'native_symbol': 'BTC',
-        'native_price_usd': 95000,
-        'min_tx_value': 0.1,     # 0.1 BTC (~$9.5K)
-        'min_volume': 1,         # 1 BTC (~$95K)
-    },
-    'solana': {
-        'dataset': 'crypto_solana_mainnet_us',
-        'model': 'solana',
-        'decimals': 9,
-        'native_symbol': 'SOL',
-        'native_price_usd': 150,
-        'min_tx_value': 10,      # 10 SOL (~$1.5K)
-        'min_volume': 100,       # 100 SOL (~$15K)
-    },
-    'xrp': {
-        'dataset': 'crypto_xrp',
-        'model': 'xrp',
-        'decimals': 6,
-        'native_symbol': 'XRP',
-        'native_price_usd': 2.5,
-        'min_tx_value': 5_000,   # 5K XRP (~$12.5K)
-        'min_volume': 50_000,    # 50K XRP (~$125K)
-    },
+# Rough USD prices for balance checks (will be updated at runtime via CoinGecko)
+_PRICES: Dict[str, float] = {
+    "ETH": 3500.0,
+    "MATIC": 0.50,
+    "BTC": 85000.0,
+    "SOL": 140.0,
+    "XRP": 2.20,
 }
 
-# Known CEX hot wallets to EXCLUDE (EVM only)
-KNOWN_CEX_ADDRESSES = {
-    '0x28c6c06298d514db089934071355e5743bf21d60',  # Binance 14
-    '0x21a31ee1afc51d94c2efccaa2092ad1028285549',  # Binance 7
-    '0xdfd5293d8e347dfe59e90efd55b2956a1343963d',  # Binance 6
-    '0xa9d1e08c7793af67e9d92fe308d5697fb81d3e43',  # Coinbase
-    '0x503828976d22510aad0201ac7ec88293211d23da',  # Coinbase 2
-    '0x56eddb7aa87536c09ccc2793473599fd21a8b17f',  # Binance 17
-    '0xf977814e90da44bfa03b6295a0616a897441acec',  # Binance 8
-    '0xbe0eb53f46cd790cd13851d5eff43d12404d33e8',  # Binance 7 Cold
-    '0x47ac0fb4f2d84898e4d9e7b4dab3c24507a6d503',  # Binance 1
-    '0x0a4c79ce84202b03e95b7a692e5d728d83c44c76',  # KuCoin
-    '0xd24400ae8bfebb18ca49be86258a3c749cf46853',  # Gemini 4
-    '0x267be1c1d684f78cb4f6a176c4911b741e4ffdc0',  # Kraken 4
-}
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-# Rotate etherscan keys
-_key_idx = 0
-
-
-def _get_explorer_key():
-    global _key_idx
-    keys = ETHERSCAN_API_KEYS or [ETHERSCAN_API_KEY]
-    key = keys[_key_idx % len(keys)]
-    _key_idx += 1
+def _rotate_etherscan_key(idx: List[int] = [0]) -> str:
+    key = ETHERSCAN_API_KEYS[idx[0] % len(ETHERSCAN_API_KEYS)]
+    idx[0] += 1
     return key
 
 
-# --- BigQuery helpers ---
-
-def init_clients():
-    if not os.path.exists(BIGQUERY_CREDENTIALS_PATH):
-        print(f"  Missing: {BIGQUERY_CREDENTIALS_PATH}")
-        sys.exit(1)
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = BIGQUERY_CREDENTIALS_PATH
-    bq = bigquery.Client()
-    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-    return bq, sb
-
-
-def estimate_cost(bq, query):
+def fetch_coingecko_prices() -> None:
+    """Best-effort price refresh from CoinGecko."""
     try:
-        job = bq.query(query, job_config=bigquery.QueryJobConfig(
-            dry_run=True, use_query_cache=False))
-        return job.total_bytes_processed / (1024**3)
-    except Exception:
+        from config.api_keys import COINGECKO_API_KEY
+        url = "https://pro-api.coingecko.com/api/v3/simple/price"
+        params = {
+            "ids": "ethereum,matic-network,bitcoin,solana,ripple",
+            "vs_currencies": "usd",
+            "x_cg_pro_api_key": COINGECKO_API_KEY,
+        }
+        r = requests.get(url, params=params, timeout=10)
+        if r.ok:
+            data = r.json()
+            mapping = {
+                "ethereum": "ETH",
+                "matic-network": "MATIC",
+                "bitcoin": "BTC",
+                "solana": "SOL",
+                "ripple": "XRP",
+            }
+            for cg_id, sym in mapping.items():
+                if cg_id in data:
+                    _PRICES[sym] = data[cg_id]["usd"]
+            log.info(f"Prices updated: {_PRICES}")
+    except Exception as e:
+        log.warning(f"CoinGecko price fetch failed, using defaults: {e}")
+
+
+# ---------------------------------------------------------------------------
+# BigQuery discovery
+# ---------------------------------------------------------------------------
+
+def init_bigquery() -> bigquery.Client:
+    creds = service_account.Credentials.from_service_account_file(
+        GOOGLE_APPLICATION_CREDENTIALS,
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    )
+    project = creds.project_id or GCP_PROJECT_ID
+    client = bigquery.Client(credentials=creds, project=project)
+    log.info(f"BigQuery client ready (project={project})")
+    return client
+
+
+def discover_chain(client: bigquery.Client, chain: str) -> List[Dict[str, Any]]:
+    cfg = CHAIN_CONFIGS[chain]
+    limit = MAX_RESULTS_PER_CHAIN
+
+    if chain == "solana":
+        sql = cfg["query_template"].format(
+            table=cfg["table"],
+            min_tx_count=cfg.get("min_tx_count", 20),
+            limit=limit,
+        )
+    else:
+        sql = cfg["query_template"].format(
+            table=cfg["table"],
+            min_volume=cfg["min_volume"],
+            min_avg=cfg["min_avg"],
+            limit=limit,
+        )
+
+    log.info(f"[{chain}] Running BigQuery discovery...")
+    job = client.query(sql)
+    rows = list(job.result())
+    log.info(f"[{chain}] BigQuery returned {len(rows)} candidate addresses")
+    return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Verification gates
+# ---------------------------------------------------------------------------
+
+def verify_evm_address(address: str, chain: str) -> Optional[Dict[str, Any]]:
+    """Check balance and contract status via Etherscan/PolygonScan."""
+    if chain == "ethereum":
+        base_url = "https://api.etherscan.io/api"
+        api_key = _rotate_etherscan_key()
+    elif chain == "polygon":
+        base_url = "https://api.polygonscan.com/api"
+        api_key = POLYGONSCAN_API_KEY
+    else:
         return None
 
-
-def run_query(bq, query, name):
-    print(f"\n  {name}")
-    gb = estimate_cost(bq, query)
-    if gb:
-        print(f"    Scan: {gb:.1f} GB")
-    print(f"    Running...")
-    start = time.time()
-    results = list(bq.query(query))
-    print(f"    {len(results):,} results in {time.time()-start:.1f}s")
-    return results
-
-
-# --- Discovery: EVM chains (Ethereum, Polygon) ---
-
-def discover_evm_volume_whales(bq, chain, cfg):
-    decimals = cfg['decimals']
-    min_val = cfg['min_tx_value']
-    min_vol = cfg['min_volume']
-    cex_list = ", ".join([f"'{a}'" for a in KNOWN_CEX_ADDRESSES])
-
-    query = f"""
-    SELECT address, large_tx_count, total_native, max_native, last_active,
-           TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), last_active, DAY) AS days_inactive
-    FROM (
-        SELECT
-            LOWER(from_address) AS address,
-            COUNT(*) AS large_tx_count,
-            SUM(SAFE_CAST(value AS FLOAT64) / 1e{decimals}) AS total_native,
-            MAX(SAFE_CAST(value AS FLOAT64) / 1e{decimals}) AS max_native,
-            MAX(block_timestamp) AS last_active
-        FROM `bigquery-public-data.{cfg['dataset']}.transactions`
-        WHERE block_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY)
-          AND SAFE_CAST(value AS FLOAT64) / 1e{decimals} >= {min_val}
-          AND from_address IS NOT NULL
-          AND LOWER(from_address) NOT IN ({cex_list})
-        GROUP BY address
-        HAVING large_tx_count >= {MIN_LARGE_TX_COUNT} AND total_native >= {min_vol}
-    )
-    WHERE TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), last_active, DAY) <= {RECENT_DAYS}
-    ORDER BY total_native DESC
-    LIMIT {MAX_RESULTS_PER_QUERY}
-    """
-    return _format_evm_results(
-        run_query(bq, query, f"Volume Whales ({chain.upper()})"),
-        chain, cfg, 'volume_whale', 'bigquery_volume_analysis')
-
-
-def discover_evm_smart_money(bq, chain, cfg):
-    decimals = cfg['decimals']
-    min_vol = cfg['min_volume']
-    cex_list = ", ".join([f"'{a}'" for a in KNOWN_CEX_ADDRESSES])
-
-    query = f"""
-    SELECT
-        LOWER(from_address) AS address,
-        COUNT(*) AS tx_count,
-        COUNT(DISTINCT to_address) AS unique_contracts,
-        SUM(SAFE_CAST(value AS FLOAT64) / 1e{decimals}) AS total_native,
-        MAX(block_timestamp) AS last_active
-    FROM `bigquery-public-data.{cfg['dataset']}.transactions`
-    WHERE block_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY)
-      AND SAFE_CAST(value AS FLOAT64) / 1e{decimals} >= 0.1
-      AND from_address IS NOT NULL
-      AND LOWER(from_address) NOT IN ({cex_list})
-    GROUP BY address
-    HAVING unique_contracts >= 20 AND total_native >= {min_vol} AND tx_count >= 10
-      AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), last_active, DAY) <= {RECENT_DAYS}
-    ORDER BY unique_contracts DESC, total_native DESC
-    LIMIT {MAX_RESULTS_PER_QUERY}
-    """
-
-    results = run_query(bq, query, f"Smart Money ({chain.upper()})")
-    price = cfg['native_price_usd']
-    symbol = cfg['native_symbol']
-
-    return [{
-        'address': r.address,
-        'blockchain': chain,
-        'address_type': 'WHALE',
-        'label': f'Smart Money ({symbol}: {int(r.unique_contracts)} protocols, '
-                 f'{float(r.total_native):,.0f} {symbol})',
-        'entity_name': None,
-        'confidence': 0.50,
-        'signal_potential': 'HIGH' if float(r.total_native) * price >= 1_000_000 else 'MEDIUM',
-        'source': f'bigquery_{chain}_smart_money',
-        'detection_method': 'bigquery_protocol_interaction',
-        'analysis_tags': json.dumps({
-            'unique_contracts': int(r.unique_contracts),
-            'tx_count': int(r.tx_count),
-            'total_native': float(r.total_native),
-            'total_usd_est': float(r.total_native) * price,
-            'chain': chain,
-        }),
-    } for r in results]
-
-
-def _format_evm_results(results, chain, cfg, source_suffix, detection):
-    price = cfg['native_price_usd']
-    symbol = cfg['native_symbol']
-    return [{
-        'address': r.address,
-        'blockchain': chain,
-        'address_type': 'WHALE',
-        'label': f'Volume Whale ({symbol}: {float(r.total_native):,.0f} {symbol}, '
-                 f'{int(r.large_tx_count)} large txs)',
-        'entity_name': None,
-        'confidence': 0.50,
-        'signal_potential': 'HIGH' if float(r.total_native) * price >= 1_000_000 else 'MEDIUM',
-        'source': f'bigquery_{chain}_{source_suffix}',
-        'detection_method': detection,
-        'analysis_tags': json.dumps({
-            'large_tx_count': int(r.large_tx_count),
-            'total_native': float(r.total_native),
-            'total_usd_est': float(r.total_native) * price,
-            'max_native': float(r.max_native),
-            'days_inactive': int(r.days_inactive),
-            'chain': chain,
-        }),
-    } for r in results]
-
-
-# --- Discovery: Bitcoin (UTXO model) ---
-
-def discover_bitcoin_whales(bq, cfg):
-    """
-    Bitcoin uses UTXO model. We look at transaction outputs to find addresses
-    receiving large BTC amounts consistently.
-    """
-    min_val = cfg['min_tx_value']
-    min_vol = cfg['min_volume']
-
-    query = f"""
-    SELECT address, large_tx_count, total_btc, max_btc, last_active,
-           TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), last_active, DAY) AS days_inactive
-    FROM (
-        SELECT
-            outputs.addresses[OFFSET(0)] AS address,
-            COUNT(*) AS large_tx_count,
-            SUM(outputs.value / 1e8) AS total_btc,
-            MAX(outputs.value / 1e8) AS max_btc,
-            MAX(block_timestamp) AS last_active
-        FROM `bigquery-public-data.crypto_bitcoin.transactions`,
-            UNNEST(outputs) AS outputs
-        WHERE block_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY)
-          AND outputs.value / 1e8 >= {min_val}
-          AND ARRAY_LENGTH(outputs.addresses) > 0
-        GROUP BY address
-        HAVING large_tx_count >= {MIN_LARGE_TX_COUNT} AND total_btc >= {min_vol}
-    )
-    WHERE TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), last_active, DAY) <= {RECENT_DAYS}
-      AND address IS NOT NULL
-    ORDER BY total_btc DESC
-    LIMIT {MAX_RESULTS_PER_QUERY}
-    """
-
-    results = run_query(bq, query, "Volume Whales (BTC)")
-    price = cfg['native_price_usd']
-
-    return [{
-        'address': r.address,
-        'blockchain': 'bitcoin',
-        'address_type': 'WHALE',
-        'label': f'BTC Whale ({float(r.total_btc):,.2f} BTC, {int(r.large_tx_count)} large txs)',
-        'entity_name': None,
-        'confidence': 0.55,  # slightly higher - BTC whales are rarer
-        'signal_potential': 'HIGH' if float(r.total_btc) * price >= 1_000_000 else 'MEDIUM',
-        'source': 'bigquery_bitcoin_volume_whale',
-        'detection_method': 'bigquery_utxo_analysis',
-        'analysis_tags': json.dumps({
-            'large_tx_count': int(r.large_tx_count),
-            'total_btc': float(r.total_btc),
-            'total_usd_est': float(r.total_btc) * price,
-            'max_btc': float(r.max_btc),
-            'days_inactive': int(r.days_inactive),
-        }),
-    } for r in results]
-
-
-# --- Discovery: Solana ---
-
-def discover_solana_whales(bq, cfg):
-    """
-    Solana BigQuery dataset has a transactions table with fee and accounts.
-    We look for signers (first account) involved in many high-fee transactions,
-    which correlates with DeFi activity and high-value operations.
-    Note: Solana dataset stopped updating March 2025, but historical data works.
-    """
-    query = f"""
-    SELECT
-        accounts[OFFSET(0)] AS address,
-        COUNT(*) AS tx_count,
-        SUM(fee / 1e9) AS total_fees_sol,
-        MAX(block_timestamp) AS last_active,
-        TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MAX(block_timestamp), DAY) AS days_inactive
-    FROM `bigquery-public-data.crypto_solana_mainnet_us.transactions`
-    WHERE block_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY)
-      AND ARRAY_LENGTH(accounts) > 0
-      AND fee > 0
-    GROUP BY address
-    HAVING tx_count >= 20
-      AND total_fees_sol >= 0.1
-    ORDER BY tx_count DESC
-    LIMIT {MAX_RESULTS_PER_QUERY}
-    """
-
-    results = run_query(bq, query, "Active Whales (SOLANA)")
-    price = cfg['native_price_usd']
-
-    return [{
-        'address': r.address,
-        'blockchain': 'solana',
-        'address_type': 'WHALE',
-        'label': f'Solana Whale ({int(r.tx_count)} txs, {float(r.total_fees_sol):.2f} SOL fees)',
-        'entity_name': None,
-        'confidence': 0.50,
-        'signal_potential': 'HIGH' if int(r.tx_count) >= 500 else 'MEDIUM',
-        'source': 'bigquery_solana_activity_whale',
-        'detection_method': 'bigquery_solana_tx_analysis',
-        'analysis_tags': json.dumps({
-            'tx_count': int(r.tx_count),
-            'total_fees_sol': float(r.total_fees_sol),
-            'days_inactive': int(r.days_inactive),
-        }),
-    } for r in results]
-
-
-# --- Discovery: XRP ---
-
-def discover_xrp_whales(bq, cfg):
-    """
-    XRP BigQuery dataset. Find accounts with large Payment transactions.
-    """
-    min_val = cfg['min_tx_value']
-    min_vol = cfg['min_volume']
-
-    query = f"""
-    SELECT
-        account AS address,
-        COUNT(*) AS large_tx_count,
-        SUM(SAFE_CAST(amount AS FLOAT64) / 1e6) AS total_xrp,
-        MAX(SAFE_CAST(amount AS FLOAT64) / 1e6) AS max_xrp,
-        MAX(close_time_human) AS last_active
-    FROM `bigquery-public-data.crypto_xrp.transactions`
-    WHERE transaction_type = 'Payment'
-      AND SAFE_CAST(amount AS FLOAT64) / 1e6 >= {min_val}
-      AND account IS NOT NULL
-    GROUP BY account
-    HAVING large_tx_count >= {MIN_LARGE_TX_COUNT}
-      AND total_xrp >= {min_vol}
-    ORDER BY total_xrp DESC
-    LIMIT {MAX_RESULTS_PER_QUERY}
-    """
-
-    results = run_query(bq, query, "Volume Whales (XRP)")
-    price = cfg['native_price_usd']
-
-    return [{
-        'address': r.address,
-        'blockchain': 'xrp',
-        'address_type': 'WHALE',
-        'label': f'XRP Whale ({float(r.total_xrp):,.0f} XRP, {int(r.large_tx_count)} large txs)',
-        'entity_name': None,
-        'confidence': 0.50,
-        'signal_potential': 'HIGH' if float(r.total_xrp) * price >= 1_000_000 else 'MEDIUM',
-        'source': 'bigquery_xrp_volume_whale',
-        'detection_method': 'bigquery_xrp_payment_analysis',
-        'analysis_tags': json.dumps({
-            'large_tx_count': int(r.large_tx_count),
-            'total_xrp': float(r.total_xrp),
-            'total_usd_est': float(r.total_xrp) * price,
-            'max_xrp': float(r.max_xrp),
-        }),
-    } for r in results]
-
-
-# --- Verification ---
-
-def verify_evm_address(address, chain, cfg):
-    """Verify EVM address via block explorer API."""
-    url = cfg['explorer_url']
-    key = cfg['explorer_key'] if chain != 'ethereum' else _get_explorer_key()
-    price = cfg['native_price_usd']
-
     try:
-        time.sleep(API_DELAY)
-        resp = requests.get(url, params={
-            'module': 'account', 'action': 'balance',
-            'address': address, 'tag': 'latest', 'apikey': key,
+        r = requests.get(base_url, params={
+            "module": "account",
+            "action": "balance",
+            "address": address,
+            "apikey": api_key,
         }, timeout=10)
-        data = resp.json()
-        if data.get('status') != '1':
+        data = r.json()
+        if data.get("status") != "1":
             return None
-        balance_native = int(data['result']) / (10 ** cfg['decimals'])
-        balance_usd = balance_native * price
-    except Exception:
+        balance_wei = int(data["result"])
+        balance_native = balance_wei / 1e18
+
+        sym = "ETH" if chain == "ethereum" else "MATIC"
+        balance_usd = balance_native * _PRICES.get(sym, 0)
+
+        r2 = requests.get(base_url, params={
+            "module": "proxy",
+            "action": "eth_getCode",
+            "address": address,
+            "apikey": api_key,
+        }, timeout=10)
+        code_data = r2.json()
+        is_contract = code_data.get("result", "0x") not in ("0x", "0x0", "")
+
+        return {
+            "balance_native": balance_native,
+            "balance_usd": balance_usd,
+            "is_contract": is_contract,
+        }
+    except Exception as e:
+        log.debug(f"EVM verify failed for {address}: {e}")
         return None
 
-    contract_name = None
-    try:
-        time.sleep(API_DELAY)
-        resp = requests.get(url, params={
-            'module': 'contract', 'action': 'getsourcecode',
-            'address': address, 'apikey': key,
-        }, timeout=10)
-        data = resp.json()
-        if data.get('result') and isinstance(data['result'], list):
-            name = data['result'][0].get('ContractName', '')
-            if name:
-                contract_name = name
-    except Exception:
-        pass
 
-    return balance_native, balance_usd, contract_name
-
-
-def verify_solana_address(address):
-    """Verify Solana address via Helius API (balance check)."""
+def verify_solana_address(address: str) -> Optional[Dict[str, Any]]:
+    """Check SOL balance via Helius."""
     if not HELIUS_API_KEY:
         return None
     try:
-        time.sleep(API_DELAY)
-        resp = requests.post(
-            f'https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}',
-            json={'jsonrpc': '2.0', 'id': 1, 'method': 'getBalance',
-                  'params': [address]},
-            timeout=10,
-        )
-        data = resp.json()
-        lamports = data.get('result', {}).get('value', 0)
+        url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getBalance",
+            "params": [address],
+        }
+        r = requests.post(url, json=payload, timeout=10)
+        data = r.json()
+        lamports = data.get("result", {}).get("value", 0)
         balance_sol = lamports / 1e9
-        balance_usd = balance_sol * CHAINS['solana']['native_price_usd']
-        return balance_sol, balance_usd, None
-    except Exception:
+        balance_usd = balance_sol * _PRICES.get("SOL", 0)
+        return {"balance_native": balance_sol, "balance_usd": balance_usd, "is_contract": False}
+    except Exception as e:
+        log.debug(f"Solana verify failed for {address}: {e}")
         return None
 
 
-def verify_and_filter(candidates, chain, cfg, max_verify=1000):
-    """
-    Verify candidates. Only keep addresses with $100K+ balance OR known label.
-    Bitcoin and XRP candidates skip verification (no good free explorer API)
-    but keep higher BigQuery thresholds to compensate.
-    """
-    if chain in ('bitcoin', 'xrp'):
-        # No free explorer API for verification - trust BigQuery thresholds
-        # (which are already set high: 10+ BTC, 500K+ XRP)
-        print(f"    {chain.upper()}: no explorer API, keeping all {len(candidates)} "
-              f"BigQuery candidates (high thresholds already applied)")
-        for c in candidates:
-            c['confidence'] = 0.60  # moderate confidence without verification
-        return candidates
+def verify_address(address: str, chain: str) -> Optional[Dict[str, Any]]:
+    if chain in ("ethereum", "polygon"):
+        return verify_evm_address(address, chain)
+    elif chain == "solana":
+        return verify_solana_address(address)
+    # Bitcoin and XRP: no easy free balance API with high rate limits.
+    # We accept BigQuery-discovered addresses for these chains without
+    # live balance verification, but with lower starting confidence.
+    return {"balance_native": 0, "balance_usd": 0, "is_contract": False, "unverified": True}
 
-    verified = []
-    total = min(len(candidates), max_verify)
-    verify_fn = verify_solana_address if chain == 'solana' else None
-    explorer_name = 'Helius' if chain == 'solana' else cfg.get('explorer_url', '')
-    print(f"    Verifying top {total} via {explorer_name}...")
 
-    for i, addr_dict in enumerate(candidates[:max_verify]):
-        address = addr_dict['address']
+# ---------------------------------------------------------------------------
+# Supabase upsert
+# ---------------------------------------------------------------------------
 
-        if chain == 'solana':
-            result = verify_solana_address(address)
-        else:
-            result = verify_evm_address(address, chain, cfg)
+def get_existing_named_addresses(sb, chain: str) -> set:
+    """Return addresses on this chain that already have a real entity_name."""
+    try:
+        result = (
+            sb.table("addresses")
+            .select("address")
+            .eq("blockchain", chain)
+            .not_.is_("entity_name", "null")
+            .execute()
+        )
+        return {r["address"].lower() for r in (result.data or [])}
+    except Exception as e:
+        log.warning(f"Failed to fetch existing named addresses for {chain}: {e}")
+        return set()
 
-        if result is None:
+
+def upsert_batch(sb, records: List[Dict], stats: Dict[str, int]) -> None:
+    if not records:
+        return
+    try:
+        sb.table("addresses").upsert(records, on_conflict="address,blockchain").execute()
+        stats["upserted"] += len(records)
+    except Exception:
+        for record in records:
+            try:
+                sb.table("addresses").upsert(record, on_conflict="address,blockchain").execute()
+                stats["upserted"] += 1
+            except Exception as e2:
+                stats["errors"] += 1
+                if stats["errors"] <= 5:
+                    log.warning(f"Upsert error: {e2}")
+
+
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
+
+BATCH_SIZE = 100
+API_RATE_DELAY = 0.22  # ~5 req/s per Etherscan free tier
+
+
+def process_chain(bq_client: bigquery.Client, sb, chain: str, dry_run: bool = False) -> Dict[str, int]:
+    cfg = CHAIN_CONFIGS[chain]
+    stats: Dict[str, int] = defaultdict(int)
+
+    candidates = discover_chain(bq_client, chain)
+    stats["bq_candidates"] = len(candidates)
+    if not candidates:
+        return dict(stats)
+
+    skip_set = get_existing_named_addresses(sb, cfg["blockchain"])
+    log.info(f"[{chain}] {len(skip_set)} addresses already have entity_name — will skip")
+
+    records: List[Dict] = []
+    needs_verification = chain in ("ethereum", "polygon", "solana")
+
+    for i, row in enumerate(candidates):
+        addr = row["address"]
+        if not addr:
+            continue
+        addr_lower = addr.lower() if chain != "bitcoin" else addr
+
+        if addr_lower in skip_set:
+            stats["skipped_named"] += 1
             continue
 
-        balance_native, balance_usd, contract_name = result
+        confidence = 0.50
+        address_type = "unknown"
+        verification_info = {}
 
-        if balance_usd < MIN_BALANCE_USD and not contract_name:  # $10K
-            continue
-
-        # Skip infrastructure contracts
-        if contract_name:
-            skip_words = ['router', 'pool', 'proxy', 'factory', 'vault',
-                          'bridge', 'swap', 'pair', 'diamond', 'beacon']
-            if any(w in contract_name.lower() for w in skip_words):
+        if needs_verification:
+            info = verify_address(addr, chain)
+            if info is None:
+                stats["verify_failed"] += 1
                 continue
-            addr_dict['entity_name'] = contract_name
 
-        addr_dict['balance_native'] = round(balance_native, 6)
-        addr_dict['balance_usd'] = round(balance_usd, 2)
+            if info.get("is_contract"):
+                stats["skipped_contract"] += 1
+                continue
 
-        if contract_name and balance_usd >= MIN_BALANCE_USD:
-            addr_dict['confidence'] = 0.90
-        elif balance_usd >= 1_000_000:
-            addr_dict['confidence'] = 0.85
-        elif balance_usd >= MIN_BALANCE_USD:
-            addr_dict['confidence'] = 0.75
-        elif contract_name:
-            addr_dict['confidence'] = 0.70
+            if info["balance_usd"] < MIN_BALANCE_USD:
+                stats["skipped_low_balance"] += 1
+                continue
 
-        verified.append(addr_dict)
+            verification_info = info
+            confidence = 0.60
+            if info["balance_usd"] >= 100_000:
+                confidence = 0.70
+                address_type = "whale"
+            elif info["balance_usd"] >= MIN_BALANCE_USD:
+                confidence = 0.60
+                address_type = "whale"
 
-        if (i + 1) % 100 == 0:
-            print(f"      {i+1}/{total} checked, {len(verified)} passed")
+            if i % 50 == 0 and i > 0:
+                log.info(f"[{chain}] Verified {i}/{len(candidates)}")
+            time.sleep(API_RATE_DELAY)
+        else:
+            total_vol = float(row.get("total_volume", 0))
+            tx_count = int(row.get("tx_count", 0))
+            if chain == "bitcoin":
+                if total_vol >= 10:
+                    confidence = 0.60
+                    address_type = "whale"
+                elif total_vol >= 1:
+                    confidence = 0.50
+            elif chain == "xrp":
+                if total_vol >= 500_000:
+                    confidence = 0.60
+                    address_type = "whale"
+                elif total_vol >= 50_000:
+                    confidence = 0.50
 
-    drop_pct = ((total - len(verified)) / total * 100) if total > 0 else 0
-    print(f"    Verified: {len(verified)}/{total} ({drop_pct:.0f}% dropped)")
-    return verified
+        vol_str = ""
+        total_vol = float(row.get("total_volume", 0))
+        tx_count = int(row.get("tx_count", 0))
+        if total_vol > 0:
+            vol_str = f" ({total_vol:,.0f} {cfg['native_symbol']}, {tx_count} txs)"
 
+        label = f"{cfg['label_prefix']}{vol_str}"
 
-# --- Supabase ---
+        record = {
+            "address": addr_lower if chain != "bitcoin" else addr,
+            "blockchain": cfg["blockchain"],
+            "label": label,
+            "address_type": address_type,
+            "entity_name": None,
+            "confidence": confidence,
+            "source": cfg["source"],
+            "detection_method": "bigquery_volume_discovery",
+            "is_verified": bool(verification_info and not verification_info.get("unverified")),
+            "first_seen": datetime.utcnow().isoformat(),
+            "analysis_tags": json.dumps({
+                "total_volume": float(row.get("total_volume", 0)),
+                "tx_count": int(row.get("tx_count", 0)),
+                "avg_per_tx": float(row.get("avg_per_tx", 0)),
+                "balance_usd": verification_info.get("balance_usd", 0) if verification_info else 0,
+                "discovery_date": datetime.utcnow().strftime("%Y-%m-%d"),
+            }),
+        }
 
-def upsert_addresses(sb, addresses):
-    if not addresses:
-        return 0
+        records.append(record)
 
-    unique = {}
-    for addr in addresses:
-        key = (addr['address'], addr['blockchain'])
-        if key not in unique or addr.get('confidence', 0) > unique[key].get('confidence', 0):
-            unique[key] = addr
-    addresses = list(unique.values())
+        if len(records) >= BATCH_SIZE and not dry_run:
+            upsert_batch(sb, records, stats)
+            records = []
 
-    now = datetime.utcnow().isoformat()
-    for addr in addresses:
-        addr['created_at'] = now
-        addr['updated_at'] = now
+    if records and not dry_run:
+        upsert_batch(sb, records, stats)
 
-    inserted = 0
-    for i in range(0, len(addresses), BATCH_SIZE):
-        batch = addresses[i:i + BATCH_SIZE]
-        try:
-            sb.table('addresses').upsert(batch, on_conflict='address,blockchain').execute()
-            inserted += len(batch)
-        except Exception as e:
-            print(f"    Upsert error: {e}")
+    stats["accepted"] = stats["upserted"]
+    return dict(stats)
 
-    print(f"    Upserted {inserted:,} to Supabase")
-    return inserted
-
-
-# --- Main ---
 
 def main():
-    chain_names = ', '.join(c.upper() for c in CHAINS)
+    parser = argparse.ArgumentParser(description="BigQuery Verified Whale Discovery")
+    parser.add_argument("--chains", nargs="+", default=list(CHAIN_CONFIGS.keys()),
+                        choices=list(CHAIN_CONFIGS.keys()),
+                        help="Chains to discover (default: all)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Query BigQuery and verify but don't write to Supabase")
+    parser.add_argument("--limit", type=int, default=MAX_RESULTS_PER_CHAIN,
+                        help=f"Max results per chain (default: {MAX_RESULTS_PER_CHAIN})")
+    args = parser.parse_args()
+
+    global MAX_RESULTS_PER_CHAIN
+    MAX_RESULTS_PER_CHAIN = args.limit
+
     print("=" * 70)
-    print("  BIGQUERY WHALE DISCOVERY (All Chains)")
+    print("  BIGQUERY VERIFIED WHALE DISCOVERY")
     print("=" * 70)
-    print(f"  Chains: {chain_names}")
-    print(f"  Min balance to keep: ${MIN_BALANCE_USD:,}")
-    print(f"  Max results/query: {MAX_RESULTS_PER_QUERY:,}")
-    print()
-    for chain, cfg in CHAINS.items():
-        print(f"    {chain.upper():10s} min_vol={cfg['min_volume']} {cfg['native_symbol']}, "
-              f"min_tx={cfg['min_tx_value']} {cfg['native_symbol']}")
-    print()
+    print(f"  Chains:    {', '.join(args.chains)}")
+    print(f"  Max/chain: {MAX_RESULTS_PER_CHAIN:,}")
+    print(f"  Dry run:   {args.dry_run}")
+    print(f"  Started:   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 70)
 
-    response = input("  Start discovery? (yes/no): ")
-    if response.lower() != 'yes':
-        return
+    fetch_coingecko_prices()
 
-    bq, sb = init_clients()
-    print(f"\n  BigQuery: {bq.project}")
+    bq_client = init_bigquery()
+    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
-    before = sb.table('addresses').select('id', count='exact').execute()
-    before_named = (sb.table('addresses').select('id', count='exact')
-                    .not_.is_('entity_name', 'null').execute())
-    print(f"  Supabase: {before.count:,} addresses ({before_named.count:,} with names)")
+    all_stats: Dict[str, Dict[str, int]] = {}
 
-    total_candidates = 0
-    total_verified = 0
-    total_upserted = 0
+    for chain in args.chains:
+        print(f"\n--- {chain.upper()} ---")
+        try:
+            chain_stats = process_chain(bq_client, sb, chain, dry_run=args.dry_run)
+            all_stats[chain] = chain_stats
+            for k, v in sorted(chain_stats.items()):
+                print(f"  {k}: {v:,}")
+        except Exception as e:
+            log.error(f"[{chain}] Failed: {e}")
+            all_stats[chain] = {"error": str(e)}
 
-    for chain, cfg in CHAINS.items():
-        print(f"\n{'=' * 70}")
-        print(f"  {chain.upper()} ({cfg['native_symbol']})")
-        print(f"{'=' * 70}")
-
-        candidates = []
-
-        # Chain-specific discovery
-        if cfg['model'] == 'evm':
-            print(f"\n  [1/2] Volume Whales")
-            candidates.extend(discover_evm_volume_whales(bq, chain, cfg))
-            print(f"\n  [2/2] Smart Money")
-            candidates.extend(discover_evm_smart_money(bq, chain, cfg))
-
-        elif cfg['model'] == 'utxo':
-            print(f"\n  [1/1] BTC Volume Whales")
-            candidates.extend(discover_bitcoin_whales(bq, cfg))
-
-        elif cfg['model'] == 'solana':
-            print(f"\n  [1/1] Solana Active Whales")
-            candidates.extend(discover_solana_whales(bq, cfg))
-
-        elif cfg['model'] == 'xrp':
-            print(f"\n  [1/1] XRP Volume Whales")
-            candidates.extend(discover_xrp_whales(bq, cfg))
-
-        total_candidates += len(candidates)
-
-        if candidates:
-            verified = verify_and_filter(candidates, chain, cfg)
-            total_verified += len(verified)
-            if verified:
-                total_upserted += upsert_addresses(sb, verified)
-
-    # Summary
-    after = sb.table('addresses').select('id', count='exact').execute()
-    after_named = (sb.table('addresses').select('id', count='exact')
-                   .not_.is_('entity_name', 'null').execute())
-
-    print(f"\n{'=' * 70}")
-    print(f"  DISCOVERY COMPLETE")
-    print(f"{'=' * 70}")
-    print(f"  BigQuery candidates:   {total_candidates:,}")
-    print(f"  Passed verification:   {total_verified:,}")
-    print(f"  Dropped (junk):        {total_candidates - total_verified:,}")
-    print(f"  Upserted to Supabase:  {total_upserted:,}")
-    print()
-    print(f"  Before: {before.count:,} ({before_named.count:,} named)")
-    print(f"  After:  {after.count:,} ({after_named.count:,} named)")
-    print(f"{'=' * 70}")
+    print("\n" + "=" * 70)
+    print("  SUMMARY")
+    print("=" * 70)
+    for chain, st in all_stats.items():
+        upserted = st.get("upserted", 0)
+        candidates = st.get("bq_candidates", 0)
+        err = st.get("error", "")
+        if err:
+            print(f"  {chain:10s}  ERROR: {err}")
+        else:
+            print(f"  {chain:10s}  {upserted:>6,} accepted / {candidates:>6,} candidates")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\nInterrupted")
-        sys.exit(0)
-    except Exception as e:
-        print(f"\n\nERROR: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    main()

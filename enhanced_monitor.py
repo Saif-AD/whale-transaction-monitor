@@ -2863,29 +2863,40 @@ def start_monitoring_threads():
         except Exception as e:
             print(RED + f"Error starting Polygon monitor: {e}" + END)
         
-        # Try to start Solana monitor
+        # Solana: Yellowstone gRPC primary, WS + HTTPS polling as fallback
+        solana_grpc_ok = False
         try:
-            solana_thread = start_solana_thread()
-            if solana_thread:
-                threads.append(solana_thread)
-                print(GREEN + "✅ Solana monitor started" + END)
+            print(BLUE + "Starting Solana Yellowstone gRPC monitor (primary)..." + END)
+            grpc_thread = start_solana_grpc_thread()
+            if grpc_thread:
+                threads.append(grpc_thread)
+                solana_grpc_ok = True
+                print(GREEN + "✅ Solana Yellowstone gRPC monitor started (real-time)" + END)
             else:
-                print(YELLOW + "⚠️ Solana monitor could not be started" + END)
+                print(YELLOW + "⚠️ Solana gRPC could not start, falling back to WS + HTTPS" + END)
         except Exception as e:
-            print(RED + f"❌ Error starting Solana monitor: {e}" + END)
-        
-        # Try to start Solana API monitor
-        try:
-            solana_api_thread = threading.Thread(
-                target=print_new_solana_transfers,
-                daemon=True,
-                name="Solana-API"
-            )
-            solana_api_thread.start()
-            threads.append(solana_api_thread)
-            print(GREEN + "✅ Solana API monitor started" + END)
-        except Exception as e:
-            print(RED + f"❌ Error starting Solana API monitor: {e}" + END)
+            print(RED + f"❌ Error starting Solana gRPC: {e}" + END)
+
+        if not solana_grpc_ok:
+            try:
+                solana_thread = start_solana_thread()
+                if solana_thread:
+                    threads.append(solana_thread)
+                    print(GREEN + "✅ Solana WS fallback monitor started" + END)
+            except Exception as e:
+                print(RED + f"❌ Error starting Solana WS fallback: {e}" + END)
+
+            try:
+                solana_api_thread = threading.Thread(
+                    target=print_new_solana_transfers,
+                    daemon=True,
+                    name="Solana-API"
+                )
+                solana_api_thread.start()
+                threads.append(solana_api_thread)
+                print(GREEN + "✅ Solana API HTTPS fallback monitor started" + END)
+            except Exception as e:
+                print(RED + f"❌ Error starting Solana API fallback: {e}" + END)
         
         # Start Bitcoin Alchemy monitor
         try:
