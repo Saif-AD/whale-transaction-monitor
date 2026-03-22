@@ -43,7 +43,7 @@ def on_whale_message(ws, message):
         if not amounts:
             return
 
-        IGNORED_CHAINS = {"tron", "trc20", "trx"}
+        IGNORED_CHAINS = {"trc20", "trx"}
         if blockchain in IGNORED_CHAINS:
             return
 

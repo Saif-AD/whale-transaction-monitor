@@ -101,7 +101,6 @@ def initialize_prices():
 
         # Native chain tokens
         "BTC": "bitcoin",
-        "TRX": "tron",
         "XRP": "ripple",
 
         # Polygon tokens

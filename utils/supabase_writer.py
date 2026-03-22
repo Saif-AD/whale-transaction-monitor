@@ -2,7 +2,7 @@
 
 Routes each transaction to its chain-specific table:
   ethereum_transactions, bitcoin_transactions, solana_transactions,
-  polygon_transactions, tron_transactions, xrp_transactions
+  polygon_transactions, xrp_transactions
 
 All tables share the same schema as whale_transactions / alchemy_transactions.
 """
@@ -165,7 +165,6 @@ def store_transaction(event: Dict[str, Any], classification_data: Optional[Dict[
       bitcoin  -> bitcoin_transactions
       solana   -> solana_transactions
       polygon  -> polygon_transactions
-      tron     -> tron_transactions
       xrp      -> xrp_transactions
 
     Thread-safe - can be called from any chain monitoring thread.

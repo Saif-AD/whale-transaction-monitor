@@ -1313,7 +1313,6 @@ class TransactionStorage:
                 'bitcoin': 'bitcoin_transactions',
                 'solana': 'solana_transactions',
                 'polygon': 'polygon_transactions',
-                'tron': 'tron_transactions',
                 'xrp': 'xrp_transactions',
             }
             target_table = _CHAIN_TABLE.get(blockchain, 'ethereum_transactions')

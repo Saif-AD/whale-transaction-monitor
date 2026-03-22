@@ -2,7 +2,7 @@
 Alchemy RPC client with rate limiting and multi-chain support.
 
 Provides receipt fetching for $50k+ transactions and block-level polling
-across Ethereum, Polygon, Solana, Bitcoin, and Tron — with automatic
+across Ethereum, Polygon, Solana, and Bitcoin — with automatic
 fallback, CU budget tracking, and hourly usage logging.
 """
 
@@ -18,7 +18,6 @@ from config.api_keys import (
     ALCHEMY_POLYGON_RPC,
     ALCHEMY_SOLANA_RPC,
     ALCHEMY_BITCOIN_RPC,
-    ALCHEMY_TRON_RPC,
     HELIUS_RPC_URL,
 )
 from utils.base_helpers import safe_print
@@ -88,7 +87,6 @@ _CHAIN_RPC_MAP = {
     'polygon': ALCHEMY_POLYGON_RPC,
     'solana': ALCHEMY_SOLANA_RPC,
     'bitcoin': ALCHEMY_BITCOIN_RPC,
-    'tron': ALCHEMY_TRON_RPC,
 }
 
 _CHAIN_FALLBACK_MAP = {
@@ -152,7 +150,7 @@ def _rpc_call(rpc_url: str, method: str, params: list, timeout: int = 10, cu_cos
 
 
 def _http_call(url: str, payload: Optional[Dict] = None, timeout: int = 10, cu_cost: int = 20, _retries: int = 3) -> Optional[Dict]:
-    """Execute an HTTP REST call (for Tron HTTP endpoints) with rate limiting and 429 retry."""
+    """Execute an HTTP REST call with rate limiting and 429 retry."""
     for attempt in range(1, _retries + 1):
         _rate_limiter.wait_if_needed(cu_cost)
         try:
@@ -416,37 +414,6 @@ def fetch_bitcoin_transaction(tx_hash: str) -> Optional[Dict]:
     if not rpc_url:
         return None
     return _rpc_call(rpc_url, 'getrawtransaction', [tx_hash, True], cu_cost=10)
-
-
-# ---------------------------------------------------------------------------
-# Tron helpers
-# ---------------------------------------------------------------------------
-
-def fetch_tron_now_block() -> Optional[Dict]:
-    """Get the latest Tron block via /wallet/getnowblock (20 CU)."""
-    rpc_url = get_alchemy_rpc('tron')
-    if not rpc_url:
-        return None
-    url = f"{rpc_url}/wallet/getnowblock"
-    return _http_call(url, cu_cost=20)
-
-
-def fetch_tron_block_txinfo(block_num: int) -> Optional[List]:
-    """Get transaction info for all txs in a Tron block (20 CU)."""
-    rpc_url = get_alchemy_rpc('tron')
-    if not rpc_url:
-        return None
-    url = f"{rpc_url}/wallet/gettransactioninfobyblocknum"
-    return _http_call(url, payload={"num": block_num}, cu_cost=20)
-
-
-def fetch_tron_transaction(tx_id: str) -> Optional[Dict]:
-    """Fetch a single Tron transaction by ID (20 CU)."""
-    rpc_url = get_alchemy_rpc('tron')
-    if not rpc_url:
-        return None
-    url = f"{rpc_url}/wallet/gettransactionbyid"
-    return _http_call(url, payload={"value": tx_id}, cu_cost=20)
 
 
 # ---------------------------------------------------------------------------

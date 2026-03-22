@@ -422,10 +422,9 @@ TOKEN_PRICES.update({
     "JUP": 0.80,  # Jupiter governance token
 })
 
-# Native chain tokens (for Bitcoin/Tron monitors)
+# Native chain tokens (for Bitcoin monitor)
 TOKEN_PRICES.update({
     "BTC": 95000,
-    "TRX": 0.25,
 })
 
 STABLE_COINS = {"usdt", "usdc", "dai", "tusd", "busd"}

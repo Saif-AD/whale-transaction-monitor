@@ -2697,7 +2697,6 @@ class GitHubWhaleDataCollector:
                     'DOGECOIN/ALL.txt',
                     'DASH/ALL.txt',
                     'BITCOIN-CASH/ALL.txt',
-                    'TRON/ALL.txt',
                     'ZCASH/ALL.txt'
                 ],
                 'format': 'mixed'
@@ -2857,8 +2856,6 @@ class GitHubWhaleDataCollector:
             return 'dash'
         elif 'bitcoin-cash' in file_path_lower or 'bch' in file_path_lower:
             return 'bitcoin-cash'
-        elif 'tron' in file_path_lower or 'trx' in file_path_lower:
-            return 'tron'
         elif 'zcash' in file_path_lower or 'zec' in file_path_lower:
             return 'zcash'
         elif 'solana' in file_path_lower or 'sol' in file_path_lower:
@@ -3055,7 +3052,6 @@ class GitHubWhaleDataCollector:
             'dogecoin': [r'\bD[5-9A-HJ-NP-U][1-9A-HJ-NP-Za-km-z]{32}\b'],
             'dash': [r'\bX[1-9A-HJ-NP-Za-km-z]{33}\b'],
             'bitcoin-cash': [r'\b[13][a-km-zA-HJ-NP-Z1-9]{25,34}\b'],
-            'tron': [r'\bT[A-Za-z1-9]{33}\b'],
             'zcash': [r'\bt1[a-zA-Z0-9]{62}\b'],
             'solana': [r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b'],
             'polygon': [r'\b0x[a-fA-F0-9]{40}\b']
