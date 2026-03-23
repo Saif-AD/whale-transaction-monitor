@@ -129,6 +129,164 @@ body {
     max-width: 300px;
 }
 
+/* Entity popover card */
+.entity-popover {
+    position: fixed;
+    z-index: 9999;
+    min-width: 320px;
+    max-width: 400px;
+    background: #1a1d23;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    padding: 0;
+    pointer-events: auto;
+    opacity: 0;
+    transform: translateY(6px);
+    transition: opacity 0.15s ease, transform 0.15s ease;
+    font-size: 0.85rem;
+    color: #c9d1d9;
+}
+
+.entity-popover.visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.entity-popover-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    font-weight: 600;
+    font-size: 0.8rem;
+    color: #8b949e;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.entity-popover-body {
+    padding: 12px 14px;
+}
+
+.entity-section {
+    margin-bottom: 10px;
+}
+
+.entity-section:last-child {
+    margin-bottom: 0;
+}
+
+.entity-section-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #8b949e;
+    margin-bottom: 4px;
+}
+
+.entity-name {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: #f0f6fc;
+    margin-bottom: 2px;
+}
+
+.entity-addr-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+    font-size: 0.78rem;
+    color: #58a6ff;
+}
+
+.entity-addr-row .addr-text {
+    cursor: pointer;
+    transition: color 0.15s;
+}
+
+.entity-addr-row .addr-text:hover {
+    color: #79c0ff;
+    text-decoration: underline;
+}
+
+.entity-addr-row .copy-btn,
+.entity-addr-row .explorer-btn {
+    cursor: pointer;
+    color: #8b949e;
+    transition: color 0.15s;
+    font-size: 0.75rem;
+}
+
+.entity-addr-row .copy-btn:hover {
+    color: #58a6ff;
+}
+
+.entity-addr-row .explorer-btn:hover {
+    color: #f0f6fc;
+}
+
+.entity-arrow {
+    text-align: center;
+    color: #484f58;
+    font-size: 0.75rem;
+    padding: 4px 0;
+}
+
+.entity-popover-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 14px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    font-size: 0.75rem;
+    color: #8b949e;
+}
+
+.entity-tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.entity-tag.known {
+    background: rgba(56, 139, 253, 0.15);
+    color: #58a6ff;
+}
+
+.entity-tag.unknown {
+    background: rgba(139, 148, 158, 0.15);
+    color: #8b949e;
+}
+
+.entity-badge {
+    cursor: pointer;
+    position: relative;
+}
+
+.entity-badge::after {
+    content: '';
+    display: none;
+}
+
+.entity-badge.has-entity::after {
+    content: '';
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    background: #58a6ff;
+    border-radius: 50%;
+    margin-left: 4px;
+    vertical-align: middle;
+}
+
 /* Transaction hash truncation */
 .tx-hash {
     width: 120px;
