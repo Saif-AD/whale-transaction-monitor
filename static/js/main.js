@@ -86,7 +86,7 @@ function handleRealtimeTransaction(tx) {
         <td data-label="Amount">${formatNumber(tx.amount || 0)} ${tx.symbol || ''}</td>
         <td data-label="USD Value">$${formatNumber(txUsdValue)}</td>
         <td data-label="Type">
-            <span class="badge bg-${getTypeColor(tx.classification || 'transfer')}" ${buildEntityTooltip(tx)}>${capitalize(tx.classification || 'transfer')}</span>
+            ${buildBadge(tx, tx.classification || 'transfer')}
         </td>
         <td data-label="Time">
             <span title="${timestamp.toLocaleString()}">${formatTimeAgo(timestamp)}</span>
@@ -260,7 +260,7 @@ function updateTransactionsTable(transactions) {
                 <td data-label="Amount">${formatNumber(amount)} ${symbol}</td>
                 <td data-label="USD Value">$${formatNumber(usdValue)}</td>
                 <td data-label="Type">
-                    <span class="badge bg-${getTypeColor(type)}" ${buildEntityTooltip(tx)}>${capitalize(type)}</span>
+                    ${buildBadge(tx, type)}
                 </td>
                 <td data-label="Time">
                     <span title="${timestamp.toLocaleString()}">${timeStr}</span>
@@ -368,14 +368,195 @@ function updateSystemStatus(data) {
     }
 }
 
-function buildEntityTooltip(tx) {
+function buildEntityData(tx) {
     const from = tx.from_entity || '';
     const to = tx.to_entity || '';
-    if (!from && !to) return '';
-    const parts = [];
-    if (from) parts.push('From: ' + from);
-    if (to) parts.push('To: ' + to);
-    return `title="${parts.join(' \u2192 ')}" style="cursor:help"`;
+    const fromAddr = tx.from || tx.from_address || '';
+    const toAddr = tx.to || tx.to_address || '';
+    const chain = tx.blockchain || tx.source || '';
+
+    return {
+        hasEntity: !!(from || to),
+        attrs: [
+            `data-from-entity="${escapeAttr(from)}"`,
+            `data-to-entity="${escapeAttr(to)}"`,
+            `data-from-addr="${escapeAttr(fromAddr)}"`,
+            `data-to-addr="${escapeAttr(toAddr)}"`,
+            `data-chain="${escapeAttr(chain)}"`,
+        ].join(' ')
+    };
+}
+
+function buildBadge(tx, type) {
+    const ed = buildEntityData(tx);
+    const color = getTypeColor(type || 'transfer');
+    const entityClass = ed.hasEntity ? ' has-entity' : '';
+    return `<span class="badge bg-${color} entity-badge${entityClass}" ${ed.attrs}>${capitalize(type || 'transfer')}</span>`;
+}
+
+function escapeAttr(str) {
+    if (!str) return '';
+    return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function truncateAddr(addr) {
+    if (!addr) return '';
+    if (addr.length <= 16) return addr;
+    return addr.substring(0, 10) + '...' + addr.substring(addr.length - 6);
+}
+
+function getAddrExplorerUrl(chain, addr) {
+    if (!addr) return '';
+    const c = (chain || '').toLowerCase();
+    if (c.includes('ethereum')) return `https://etherscan.io/address/${addr}`;
+    if (c.includes('solana')) return `https://solscan.io/account/${addr}`;
+    if (c.includes('xrp') || c.includes('ripple')) return `https://xrpscan.com/account/${addr}`;
+    if (c.includes('bitcoin')) return `https://blockstream.info/address/${addr}`;
+    if (c.includes('polygon') || c.includes('matic')) return `https://polygonscan.com/address/${addr}`;
+    return '';
+}
+
+// Entity popover system
+(function initEntityPopover() {
+    const popover = document.createElement('div');
+    popover.className = 'entity-popover';
+    popover.id = 'entity-popover';
+    document.body.appendChild(popover);
+
+    let hideTimeout = null;
+    let currentBadge = null;
+
+    function showPopover(badge) {
+        clearTimeout(hideTimeout);
+        currentBadge = badge;
+
+        const fromEntity = badge.dataset.fromEntity || '';
+        const toEntity = badge.dataset.toEntity || '';
+        const fromAddr = badge.dataset.fromAddr || '';
+        const toAddr = badge.dataset.toAddr || '';
+        const chain = badge.dataset.chain || '';
+        const classification = badge.textContent.trim();
+
+        let html = '';
+        html += `<div class="entity-popover-header">`;
+        html += `<span>Wallet Details</span>`;
+        html += `<span class="entity-tag ${fromEntity || toEntity ? 'known' : 'unknown'}">${fromEntity || toEntity ? 'Identified' : 'Unknown'}</span>`;
+        html += `</div>`;
+        html += `<div class="entity-popover-body">`;
+
+        // From section
+        if (fromAddr) {
+            html += `<div class="entity-section">`;
+            html += `<div class="entity-section-label">From</div>`;
+            if (fromEntity) {
+                html += `<div class="entity-name">${escapeHtml(fromEntity)}</div>`;
+            }
+            html += `<div class="entity-addr-row">`;
+            html += `<span class="addr-text" data-copy="${escapeAttr(fromAddr)}">${truncateAddr(fromAddr)}</span>`;
+            html += `<i class="fas fa-copy copy-btn" data-copy="${escapeAttr(fromAddr)}" title="Copy address"></i>`;
+            const fromUrl = getAddrExplorerUrl(chain, fromAddr);
+            if (fromUrl) {
+                html += `<a href="${fromUrl}" target="_blank" class="explorer-btn" title="View on explorer"><i class="fas fa-external-link-alt"></i></a>`;
+            }
+            html += `</div></div>`;
+        }
+
+        // Arrow
+        if (fromAddr && toAddr) {
+            html += `<div class="entity-arrow"><i class="fas fa-arrow-down"></i></div>`;
+        }
+
+        // To section
+        if (toAddr) {
+            html += `<div class="entity-section">`;
+            html += `<div class="entity-section-label">To</div>`;
+            if (toEntity) {
+                html += `<div class="entity-name">${escapeHtml(toEntity)}</div>`;
+            }
+            html += `<div class="entity-addr-row">`;
+            html += `<span class="addr-text" data-copy="${escapeAttr(toAddr)}">${truncateAddr(toAddr)}</span>`;
+            html += `<i class="fas fa-copy copy-btn" data-copy="${escapeAttr(toAddr)}" title="Copy address"></i>`;
+            const toUrl = getAddrExplorerUrl(chain, toAddr);
+            if (toUrl) {
+                html += `<a href="${toUrl}" target="_blank" class="explorer-btn" title="View on explorer"><i class="fas fa-external-link-alt"></i></a>`;
+            }
+            html += `</div></div>`;
+        }
+
+        html += `</div>`;
+
+        // Footer with classification
+        html += `<div class="entity-popover-footer">`;
+        html += `<span>${capitalize(classification)}</span>`;
+        html += `<span>${capitalize(chain)}</span>`;
+        html += `</div>`;
+
+        popover.innerHTML = html;
+
+        // Position near the badge
+        popover.style.visibility = 'hidden';
+        popover.style.display = 'block';
+        const rect = badge.getBoundingClientRect();
+        const popW = popover.offsetWidth || 340;
+        const popH = popover.offsetHeight || 200;
+        popover.style.display = '';
+        popover.style.visibility = '';
+
+        let left = rect.left + rect.width / 2 - popW / 2;
+        let top = rect.bottom + 8;
+
+        if (left < 8) left = 8;
+        if (left + popW > window.innerWidth - 8) left = window.innerWidth - popW - 8;
+        if (top + popH > window.innerHeight - 8) {
+            top = rect.top - popH - 8;
+        }
+
+        popover.style.left = left + 'px';
+        popover.style.top = top + 'px';
+        popover.classList.add('visible');
+    }
+
+    function hidePopover() {
+        hideTimeout = setTimeout(() => {
+            popover.classList.remove('visible');
+            currentBadge = null;
+        }, 200);
+    }
+
+    // Delegated events on document
+    document.addEventListener('mouseenter', function(e) {
+        const badge = e.target.closest('.entity-badge');
+        if (badge) showPopover(badge);
+    }, true);
+
+    document.addEventListener('mouseleave', function(e) {
+        const badge = e.target.closest('.entity-badge');
+        if (badge) hidePopover();
+    }, true);
+
+    // Keep popover open when hovering over it
+    popover.addEventListener('mouseenter', function() {
+        clearTimeout(hideTimeout);
+    });
+    popover.addEventListener('mouseleave', function() {
+        hidePopover();
+    });
+
+    // Copy handler inside popover
+    popover.addEventListener('click', function(e) {
+        const copyEl = e.target.closest('[data-copy]');
+        if (copyEl) {
+            const text = copyEl.dataset.copy;
+            navigator.clipboard.writeText(text).then(() => showToast('Address copied'));
+        }
+    });
+})();
+
+function escapeHtml(str) {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
 }
 
 // Helper function to format number with commas
