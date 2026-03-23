@@ -161,7 +161,9 @@ class WalletProfiler:
             if cp not in counter:
                 counter[cp] = {'address': cp, 'tx_count': 0, 'total_usd': 0.0, 'label': ''}
             counter[cp]['tx_count'] += 1
-            counter[cp]['total_usd'] += float(tx.get('usd_value', 0) or 0)
+            _usd = float(tx.get('usd_value', 0) or 0)
+            if _usd <= 10_000_000_000:  # Sanity cap
+                counter[cp]['total_usd'] += _usd
 
         # Enrich with labels
         self._refresh_entity_cache()
@@ -262,8 +264,14 @@ class WalletProfiler:
         last_active = None
         pnl_estimated = 0.0
 
+        # Per-transaction sanity cap: skip obviously wrong values that slipped
+        # past the storage cap (historical data or race conditions).
+        _MAX_TX_USD = 10_000_000_000  # $10B — no single whale tx exceeds this
+
         for tx in txs:
             usd = float(tx.get('usd_value', 0) or 0)
+            if usd > _MAX_TX_USD:
+                usd = 0  # Treat as bad data
             total_volume_all += usd
 
             ts_str = tx.get('timestamp', '')
@@ -327,17 +335,28 @@ class WalletProfiler:
         }
 
     def _enrich_with_portfolio(self, profile: Dict[str, Any]) -> Dict[str, Any]:
-        """Enrich profile with Zerion portfolio data."""
+        """Enrich profile with Zerion portfolio data, with tx-based fallback."""
         zerion = self._get_zerion()
-        if not zerion:
-            return profile
+        if zerion:
+            try:
+                portfolio = zerion.get_wallet_portfolio(profile['address'])
+                if portfolio and portfolio.total_value_usd > 0:
+                    profile['portfolio_value_usd'] = portfolio.total_value_usd
+                    return profile
+            except Exception as e:
+                logger.warning(f"Portfolio enrichment failed for {profile['address']}: {e}")
 
-        try:
-            portfolio = zerion.get_wallet_portfolio(profile['address'])
-            if portfolio:
-                profile['portfolio_value_usd'] = portfolio.total_value_usd
-        except Exception as e:
-            logger.warning(f"Portfolio enrichment failed for {profile['address']}: {e}")
+        # Fallback: estimate portfolio from net buy volume (buys - sells) in last 30 days.
+        # This is a rough lower bound — the wallet likely holds more than just recent buys.
+        buy_vol = profile.get('total_volume_usd_30d', 0) * (
+            profile.get('buy_count', 0) / max(1, profile.get('buy_count', 0) + profile.get('sell_count', 0))
+        )
+        sell_vol = profile.get('total_volume_usd_30d', 0) * (
+            profile.get('sell_count', 0) / max(1, profile.get('buy_count', 0) + profile.get('sell_count', 0))
+        )
+        net_accumulation = max(0, buy_vol - sell_vol)
+        if net_accumulation > 0:
+            profile['portfolio_value_usd'] = round(net_accumulation, 2)
 
         return profile
 

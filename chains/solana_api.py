@@ -380,10 +380,9 @@ def print_new_solana_transfers():
                     except (ValueError, TypeError):
                         amount_val = 0
 
-                    if amount_val > 10 ** decimals:
-                        token_amount = amount_val / (10 ** decimals)
-                    else:
-                        token_amount = amount_val
+                    # amount is already human-readable (uiAmount from Alchemy
+                    # jsonParsed getBlock) — do NOT divide by 10^decimals again.
+                    token_amount = amount_val
 
                     price = TOKEN_PRICES.get(symbol, 0)
                     estimated_usd = token_amount * price

@@ -132,6 +132,19 @@ def _map_event_to_row(event: Dict[str, Any], classification_data: Optional[Dict[
         event.get('value_usd', 0) or 0
     )
 
+    # Sanity cap: no single whale transaction exceeds $10B. Values above this
+    # indicate a decimal normalization bug (e.g. raw token amount * price
+    # without dividing by 10^decimals). Log and cap to prevent polluting
+    # aggregated metrics in wallet_profiles.
+    _MAX_SANE_USD = 10_000_000_000  # $10 billion
+    if usd_value > _MAX_SANE_USD:
+        logger.warning(
+            f"USD sanity cap triggered: ${usd_value:,.0f} for "
+            f"{event.get('symbol', '?')} on {event.get('blockchain', '?')} "
+            f"tx={event.get('tx_hash', '?')[:16]}... — capping to 0 (likely decimal bug)"
+        )
+        usd_value = 0  # Drop obviously wrong values rather than store trillions
+
     return {
         'transaction_hash': tx_hash,
         'timestamp': ts_iso,
