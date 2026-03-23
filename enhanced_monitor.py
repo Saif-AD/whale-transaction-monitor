@@ -1234,7 +1234,10 @@ class TransactionStorage:
                 'token_address': tx_data.get('token_address', ''),
                 'classification': classification_str,
                 'confidence': confidence,
-                'usd_value': float(tx_data.get('estimated_usd', 0) or tx_data.get('value_usd', 0) or tx_data.get('usd_value', 0) or 0),
+                'usd_value': min(
+                    float(tx_data.get('estimated_usd', 0) or tx_data.get('value_usd', 0) or tx_data.get('usd_value', 0) or 0),
+                    10_000_000_000  # $10B sanity cap — values above indicate decimal bug
+                ),
                 'whale_score': whale_score,
                 'blockchain': blockchain,
                 'from_address': from_address,
