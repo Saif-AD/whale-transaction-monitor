@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wallet Tracker - Crypto Whale Monitor</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+    <!-- Navigation Bar -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">
+                <i class="fas fa-whale me-2"></i>
+                Crypto Whale Monitor
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">Transactions</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/tracker">Wallet Tracker</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid mt-3">
+        <!-- Search Bar -->
+        <div class="card mb-3">
+            <div class="card-body">
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">Search Wallet</label>
+                        <input type="text" id="wallet-search" class="form-control" placeholder="Enter address or entity name...">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Chain</label>
+                        <select id="chain-select" class="form-select">
+                            <option value="">All Chains</option>
+                            <option value="ethereum">Ethereum</option>
+                            <option value="bitcoin">Bitcoin</option>
+                            <option value="solana">Solana</option>
+                            <option value="polygon">Polygon</option>
+                            <option value="xrp">XRP</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <button id="search-btn" class="btn btn-primary w-100">
+                            <i class="fas fa-search me-1"></i> Search
+                        </button>
+                    </div>
+                </div>
+                <div id="search-results" class="mt-3" style="display:none;">
+                    <div class="list-group" id="search-results-list"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <!-- Watchlists Panel -->
+            <div class="col-lg-4">
+                <div class="card mb-3">
+                    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="fas fa-eye me-2"></i>Watchlists</h5>
+                        <button class="btn btn-sm btn-outline-light" data-bs-toggle="modal" data-bs-target="#createWatchlistModal">
+                            <i class="fas fa-plus"></i>
+                        </button>
+                    </div>
+                    <div class="card-body p-0">
+                        <div id="watchlists-container">
+                            <div class="text-center py-3 text-muted">Loading watchlists...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Alert History -->
+                <div class="card mb-3">
+                    <div class="card-header bg-warning text-dark">
+                        <h5 class="mb-0"><i class="fas fa-bell me-2"></i>Recent Alerts</h5>
+                    </div>
+                    <div class="card-body p-0">
+                        <div id="alert-history" class="list-group list-group-flush">
+                            <div class="text-center py-3 text-muted">No alerts yet</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Leaderboard -->
+            <div class="col-lg-8">
+                <div class="card">
+                    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="fas fa-trophy me-2"></i>Whale Leaderboard</h5>
+                        <div class="d-flex gap-2">
+                            <select id="leaderboard-sort" class="form-select form-select-sm" style="width:auto;">
+                                <option value="smart_money_score">Smart Money Score</option>
+                                <option value="total_volume_usd_30d">30d Volume</option>
+                                <option value="portfolio_value_usd">Portfolio Value</option>
+                                <option value="pnl_estimated_usd">Est. PnL</option>
+                            </select>
+                            <select id="leaderboard-chain" class="form-select form-select-sm" style="width:auto;">
+                                <option value="">All Chains</option>
+                                <option value="ethereum">Ethereum</option>
+                                <option value="bitcoin">Bitcoin</option>
+                                <option value="solana">Solana</option>
+                                <option value="polygon">Polygon</option>
+                                <option value="xrp">XRP</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-hover table-striped mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>#</th>
+                                        <th>Address</th>
+                                        <th>Chain</th>
+                                        <th>Score</th>
+                                        <th>30d Volume</th>
+                                        <th>Tags</th>
+                                        <th>Last Active</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="leaderboard-table">
+                                    <tr><td colspan="7" class="text-center py-4">Loading leaderboard...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Watchlist Modal -->
+    <div class="modal fade" id="createWatchlistModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Create Watchlist</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="text" id="new-watchlist-name" class="form-control" placeholder="Watchlist name...">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="create-watchlist-btn">Create</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast container for alerts -->
+    <div class="position-fixed bottom-0 end-0 p-3" style="z-index: 11">
+        <div id="alert-toast" class="toast" role="alert">
+            <div class="toast-header bg-warning">
+                <i class="fas fa-bell me-2"></i>
+                <strong class="me-auto">Wallet Alert</strong>
+                <small id="alert-toast-time"></small>
+                <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="alert-toast-body"></div>
+        </div>
+    </div>
+
+    <footer class="bg-dark text-white text-center py-3 mt-4">
+        <div class="container">
+            <p class="mb-0">Crypto Whale Transaction Monitor &copy; 2025</p>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <script src="{{ url_for('static', filename='js/tracker.js') }}"></script>
+</body>
+</html>
