@@ -3,7 +3,7 @@
 # =======================
 
 # --- ERC‑20 tokens to monitor on Ethereum ---
-# ⚠️ REDUCED TO TOP 20 TOKENS TO AVOID RATE LIMITS
+# Primary: Alchemy alchemy_getAssetTransfers (batched). Fallback: Etherscan per-token.
 TOKENS_TO_MONITOR = {
     # 🔥 TOP MEME/TRENDING TOKENS (High whale activity)
     "PEPE": {"contract": "0x6982508145454ce325ddbe47a25d4ec3d2311933", "decimals": 18, "min_threshold": 15_000},
@@ -32,24 +32,39 @@ TOKENS_TO_MONITOR = {
     # 💰 MAJOR TOKENS (for big whale moves)
     "WETH": {"contract": "0xC02aaa39b223FE8D0A0e5C4F27ead9083C756Cc2", "decimals": 18, "min_threshold": 50_000},  # Higher threshold
     "WBTC": {"contract": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599", "decimals": 8, "min_threshold": 100_000},  # Very high threshold
-    "USDT": {"contract": "0xdac17f958d2ee523a2206206994597c13d831ec7", "decimals": 6, "min_threshold": 500_000},  # Mega whales only
-    "USDC": {"contract": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "decimals": 6, "min_threshold": 500_000},  # Mega whales only
-    "DAI": {"contract": "0x6b175474e89094c44da98b954eedeac495271d0f", "decimals": 18, "min_threshold": 500_000},  # Mega whales only
     
-    # 💡 NOTE: Reduced from 108 to 20 tokens to stay within Etherscan rate limits
-    #     If you need more tokens, upgrade to Etherscan Pro plan
+    # 💎 DeFi Blue Chips (added with Alchemy migration — no rate limit penalty)
+    "AAVE": {"contract": "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9", "decimals": 18, "min_threshold": 10_000},
+    "MKR": {"contract": "0x9f8F72aA9304c8B593d555F12eF6589cC3A579A2", "decimals": 18, "min_threshold": 10_000},
+    "LDO": {"contract": "0x5A98FcBEA516Cf06857215779Fd812CA3beF1B32", "decimals": 18, "min_threshold": 8_000},
+    "COMP": {"contract": "0xc00e94Cb662C3520282E6f5717214004A7f26888", "decimals": 18, "min_threshold": 8_000},
+    "YFI": {"contract": "0x0bc529c00C6401aEF6D220BE8C6Ea1667F6Ad93e", "decimals": 18, "min_threshold": 10_000},
+    "SNX": {"contract": "0xC011a73ee8576Fb46F5E1c5751cA3B9Fe0af2a6F", "decimals": 18, "min_threshold": 6_000},
+
+    # 🔧 Infrastructure
+    "RNDR": {"contract": "0x6De037ef9aD2725EB40118Bb1702EBb27e4Aeb24", "decimals": 18, "min_threshold": 8_000},
+    "IMX": {"contract": "0xF57e7e7C23978C3cAEC3C3548E3D615c346e79fF", "decimals": 18, "min_threshold": 6_000},
+    "GRT": {"contract": "0xc944E90C64B2c07662A292be6244BDf05Cda44a7", "decimals": 18, "min_threshold": 6_000},
+
+    # 🐕 High whale activity
+    "DOGE": {"contract": "0x4206931337dc273a630d328dA6441786BfAD668f", "decimals": 8, "min_threshold": 10_000},
+
+    # 🔥 Popular tokens
+    "ENS": {"contract": "0xC18360217D8F7Ab5e7c516566761Ea12Ce7F9D72", "decimals": 18, "min_threshold": 8_000},
+    "BLUR": {"contract": "0x5283D291DBCF85356a21bA090E6db59121208b44", "decimals": 18, "min_threshold": 6_000},
+    "BAL": {"contract": "0xba100000625a3754423978a60c9317c58a424e3D", "decimals": 18, "min_threshold": 5_000},
+    "1INCH": {"contract": "0x111111111117dC0aa78b770fA6A738034120C302", "decimals": 18, "min_threshold": 5_000},
+    "CVX": {"contract": "0x4e3FBD56CD56c3e72c1403e103b45Db9da5B9D2B", "decimals": 18, "min_threshold": 5_000},
+    "DYDX": {"contract": "0x92D6C1e31e14520e676a687F0a93788B716BEff5", "decimals": 18, "min_threshold": 6_000},
 }
 
 # 🏛️ PROFESSIONAL-GRADE TOP 100 ERC-20 TOKEN MONITORING LIST
 # Real contract addresses verified from Etherscan and CoinGecko
 TOP_100_ERC20_TOKENS = [
     # 🏆 MEGA CAP ($10B+) - $500K threshold
-    {"symbol": "USDT", "address": "0xdac17f958d2ee523a2206206994597c13d831ec7", "tier": "mega_cap", "decimals": 6},
-    {"symbol": "USDC", "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "tier": "mega_cap", "decimals": 6},
     {"symbol": "WETH", "address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "tier": "mega_cap", "decimals": 18},
     {"symbol": "WBTC", "address": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599", "tier": "mega_cap", "decimals": 8},
     {"symbol": "SHIB", "address": "0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce", "tier": "mega_cap", "decimals": 18},
-    {"symbol": "DAI", "address": "0x6b175474e89094c44da98b954eedeac495271d0f", "tier": "mega_cap", "decimals": 18},
     
     # 🚀 LARGE CAP ($1B+) - $100K threshold  
     {"symbol": "UNI", "address": "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984", "tier": "large_cap", "decimals": 18},
@@ -123,13 +138,7 @@ TOP_100_ERC20_TOKENS = [
     {"symbol": "SHIDO", "address": "0x94845333028b1204fbe14e1278fd4adde46b22ce", "tier": "micro_cap", "decimals": 9},
     {"symbol": "SQUID", "address": "0x21ad647b8f4fe333212e735bfc1f36b4941e6ab2", "tier": "micro_cap", "decimals": 18},
     
-    # 💰 STABLECOINS & INSTITUTIONAL
-    {"symbol": "FRAX", "address": "0x853d955acef822db058eb8505911ed77f175b99e", "tier": "large_cap", "decimals": 18},
-    {"symbol": "LUSD", "address": "0x5f98805a4e8be255a32880fdec7f6728c6568ba0", "tier": "mid_cap", "decimals": 18},
-    {"symbol": "USDD", "address": "0x0c10bf8fcb7bf5412187a595ab97a3609160b5c6", "tier": "mid_cap", "decimals": 18},
-    {"symbol": "USDP", "address": "0x1456688345527be1f37e9e627da0837d6f08c925", "tier": "mid_cap", "decimals": 18},
-    {"symbol": "TUSD", "address": "0x0000000000085d4780b73119b644ae5ecd22b376", "tier": "mid_cap", "decimals": 18},
-    {"symbol": "GUSD", "address": "0x056fd409e1d7a124bd7017459dfea2f387b6d5cd", "tier": "small_cap", "decimals": 2},
+    # (Stablecoins removed — not tracked)
     
     # 🎮 GAMING & METAVERSE
     {"symbol": "AXS", "address": "0xbb0e17ef65f82ab018d8edd776e8dd940327b28b", "tier": "mid_cap", "decimals": 18},
@@ -191,10 +200,6 @@ POLYGON_TOKENS_TO_MONITOR = {
     # Major DeFi tokens on Polygon
     "WMATIC": {"contract": "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270", "decimals": 18, "min_threshold": 3_000},
     "WETH": {"contract": "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619", "decimals": 18, "min_threshold": 5_000},
-    "USDC": {"contract": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", "decimals": 6, "min_threshold": 10_000},
-    "USDC.e": {"contract": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", "decimals": 6, "min_threshold": 10_000},
-    "USDT": {"contract": "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", "decimals": 6, "min_threshold": 10_000},
-    "DAI": {"contract": "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063", "decimals": 18, "min_threshold": 10_000},
     "AAVE": {"contract": "0xD6DF932A45C0f255f85145f286eA0b292B21C90B", "decimals": 18, "min_threshold": 1_000},
     "UNI": {"contract": "0xb33EaAd8d922B1083446DC23f610c2567fB5180f", "decimals": 18, "min_threshold": 1_000},
     "LINK": {"contract": "0x53E0bca35eC356BD5ddDFebbD1Fc0fD03FaBad39", "decimals": 18, "min_threshold": 3_000},
@@ -236,8 +241,6 @@ SOL_TOKENS_TO_MONITOR = {
     "WIF": {"mint": "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLZYQJV5sCvpr", "decimals": 6, "min_threshold": 1_000},
     "RENDER": {"mint": "rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4EkHBof", "decimals": 8, "min_threshold": 1_500},
     "MEAN": {"mint": "MEANeD3XDdUmNMsRGjASkSWdC8prLYsoRJ61pPeHctD", "decimals": 6, "min_threshold": 1_000},
-    "UXDY": {"mint": "UXD8m9cvwk4RcSxnX2HZ9VudQCEeDH6mQRm2YaTFstq", "decimals": 6, "min_threshold": 2_000},
-    "USDR": {"mint": "USDrbBQwQbQ2oWHUPfA8QBHcyVxKUq1xHyXsSLKdUq2", "decimals": 6, "min_threshold": 5_000},
     "SHDW": {"mint": "SHDWyBxihqiCj6YekG2GUr7wqKLeLAMK1gHZck9pL6y", "decimals": 9, "min_threshold": 1_500},
     "COPE": {"mint": "8HGyAAB1yoM1ttS7pXjHMa3dukTFGQggnFFH3hJZgzQh", "decimals": 6, "min_threshold": 1_000},
 
@@ -245,6 +248,11 @@ SOL_TOKENS_TO_MONITOR = {
     "TRUMP": {"mint": "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN", "decimals": 6, "min_threshold": 10_000},
     "JUP": {"mint": "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN", "decimals": 6, "min_threshold": 5_000},
     "POPCAT": {"mint": "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr", "decimals": 9, "min_threshold": 2_000},
+
+    # 2025 hot tokens — verified March 2026
+    "FARTCOIN": {"mint": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump", "decimals": 6, "min_threshold": 2_000},
+    "AI16Z": {"mint": "HeLp6NuQkmYB4pYWo2zYs22mESHXPQYzXbB8n4V98jwC", "decimals": 9, "min_threshold": 2_000},
+    "PENGU": {"mint": "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv", "decimals": 6, "min_threshold": 2_000},
 }
 
 # --- TOKEN PRICES (USD) for ERC‑20 tokens ---
@@ -397,35 +405,76 @@ TOKEN_PRICES = {
 
 # Update TOKEN_PRICES with current approximate values
 TOKEN_PRICES.update({
-    # Original Solana tokens
-    "SOL": 150,
-    "BONK": 0.00001,
+    # Original Solana tokens (updated March 2026)
+    "SOL": 140,
+    "BONK": 0.000018,
     "RAY": 0.35,
     "SAMO": 0.015,
     "DUST": 0.5,
     "ORCA": 0.45,
-    "MSOL": 155,  # Slightly higher than SOL due to staking
+    "MSOL": 147,  # Slightly higher than SOL due to staking
     "SRM": 0.1,
     "MNGO": 0.02,
     "ATLAS": 0.01,
-    
-    # New Solana tokens
-    "JTO": 2.0,
-    "PYTH": 0.5,
-    "BSOL": 160,  # Slightly higher than SOL
-    "WIF": 0.15,
+
+    # Solana tokens (updated March 2026)
+    "JTO": 2.50,
+    "PYTH": 0.25,
+    "BSOL": 144,  # Slightly higher than SOL
+    "WIF": 0.50,
     "RENDER": 8.0,
     "MEAN": 0.03,
-    "UXDY": 1.0,
-    "USDR": 1.0,
     "SHDW": 0.05,
     "COPE": 0.12,
-    "JUP": 0.80,  # Jupiter governance token
+    "JUP": 0.60,
+    "TRUMP": 12.0,    # Official Trump memecoin
+    "POPCAT": 0.35,   # Solana memecoin
+    "FARTCOIN": 0.80,  # Solana memecoin
+    "AI16Z": 0.50,     # AI agent token
+    "PENGU": 0.02,     # Pudgy Penguins token
 })
 
 # Native chain tokens (for Bitcoin monitor)
 TOKEN_PRICES.update({
     "BTC": 95000,
+})
+
+# --- Base L2 tokens to monitor (chain-native only) ---
+BASE_TOKENS_TO_MONITOR = {
+    "AERO": {"contract": "0x940181a94A35A4569E4529A3CDfB74e38FD98631", "decimals": 18, "min_threshold": 5_000},
+    "VIRTUAL": {"contract": "0x0b3e328455c4059EEb9e3f84b5543F74E24e7E1b", "decimals": 18, "min_threshold": 5_000},
+    "BRETT": {"contract": "0x532f27101965dd16442E59d40670FaF5eBB142E4", "decimals": 18, "min_threshold": 5_000},
+    "TOSHI": {"contract": "0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4", "decimals": 18, "min_threshold": 3_000},
+    "DEGEN": {"contract": "0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed", "decimals": 18, "min_threshold": 3_000},
+}
+
+# --- Arbitrum One tokens to monitor (chain-native only) ---
+ARBITRUM_TOKENS_TO_MONITOR = {
+    "ARB": {"contract": "0x912CE59144191C1204E64559FE8253a0e49E6548", "decimals": 18, "min_threshold": 8_000},
+    "GMX": {"contract": "0xfc5A1A6EB076a2C7aD06eD22C90d7E710E35ad0a", "decimals": 18, "min_threshold": 10_000},
+    "GNS": {"contract": "0x18c11FD286C5EC11c3b683Caa813B77f5163A122", "decimals": 18, "min_threshold": 5_000},
+    "MAGIC": {"contract": "0x539bdE0d7Dbd336b79148AA742883198BBF60342", "decimals": 18, "min_threshold": 5_000},
+    "RDNT": {"contract": "0x3082CC23568eA640225c2467653dB90e9250AaA0", "decimals": 18, "min_threshold": 3_000},
+    "PENDLE": {"contract": "0x0c880f6761F1af8d9Aa9C466984b80DAb9a8c9e8", "decimals": 18, "min_threshold": 5_000},
+    "GRAIL": {"contract": "0x3d9907F9a368ad0a51Be60f7Da3b97cf940982D8", "decimals": 18, "min_threshold": 5_000},
+}
+
+# Update TOKEN_PRICES with Base and Arbitrum chain-native token prices
+TOKEN_PRICES.update({
+    # Base-native tokens
+    "AERO": 1.20,
+    "BRETT": 0.10,
+    "TOSHI": 0.0005,
+    "DEGEN": 0.008,
+    "VIRTUAL": 1.50,
+
+    # Arbitrum-native tokens
+    "GMX": 30.0,
+    "GNS": 3.0,
+    "MAGIC": 0.60,
+    "RDNT": 0.08,
+    "PENDLE": 4.50,
+    "GRAIL": 1500,
 })
 
 STABLE_COINS = {"usdt", "usdc", "dai", "tusd", "busd"}

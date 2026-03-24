@@ -62,6 +62,7 @@ class WalletBatchScorer:
         chain_tables = [
             'ethereum_transactions', 'bitcoin_transactions',
             'solana_transactions', 'polygon_transactions', 'xrp_transactions',
+            'base_transactions', 'arbitrum_transactions',
         ]
 
         addresses: Set[str] = set()

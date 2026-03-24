@@ -35,7 +35,7 @@ function classificationBadge(cls) {
 }
 
 function chainBadge(chain) {
-    const colors = {ethereum:'#627eea', bitcoin:'#f7931a', solana:'#14f195', polygon:'#8247e5', xrp:'#23292f'};
+    const colors = {ethereum:'#627eea', bitcoin:'#f7931a', solana:'#14f195', polygon:'#8247e5', xrp:'#23292f', base:'#0052ff', arbitrum:'#28a0f0'};
     const c = (chain || '').toLowerCase();
     const color = colors[c] || '#6c757d';
     return `<span class="badge" style="background:${color}">${c || 'unknown'}</span>`;
@@ -57,6 +57,8 @@ function getExplorerLink(chain, hash) {
         bitcoin: 'https://mempool.space/tx/',
         solana: 'https://solscan.io/tx/',
         polygon: 'https://polygonscan.com/tx/',
+        base: 'https://basescan.org/tx/',
+        arbitrum: 'https://arbiscan.io/tx/',
         xrp: 'https://xrpscan.com/tx/',
     };
     const base = explorers[(chain || '').toLowerCase()] || '#';
@@ -69,6 +71,8 @@ function getAddressExplorerLink(chain, addr) {
         bitcoin: 'https://mempool.space/address/',
         solana: 'https://solscan.io/account/',
         polygon: 'https://polygonscan.com/address/',
+        base: 'https://basescan.org/address/',
+        arbitrum: 'https://arbiscan.io/address/',
         xrp: 'https://xrpscan.com/account/',
     };
     const base = explorers[(chain || '').toLowerCase()] || '#';

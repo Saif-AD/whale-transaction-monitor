@@ -13,6 +13,8 @@ from chains.xrp import start_xrp_thread
 from chains.solana import start_solana_thread
 from chains.solana_grpc import start_solana_grpc_thread
 from chains.polygon import print_new_polygon_transfers
+from chains.base import print_new_base_transfers
+from chains.arbitrum import print_new_arbitrum_transfers
 from chains.bitcoin_alchemy import poll_bitcoin_blocks
 from chains.solana_api import print_new_solana_transfers
 from models.classes import initialize_prices
@@ -33,6 +35,10 @@ from config.settings import (
     bitcoin_sell_counts,
     solana_api_buy_counts,
     solana_api_sell_counts,
+    base_buy_counts,
+    base_sell_counts,
+    arbitrum_buy_counts,
+    arbitrum_sell_counts,
 )
 
 # Wallet tracker imports
@@ -180,6 +186,26 @@ def get_stats():
             token_stats[symbol] = {'buys': 0, 'sells': 0}
         token_stats[symbol]['buys'] += count
     for symbol, count in solana_api_sell_counts.items():
+        if symbol not in token_stats:
+            token_stats[symbol] = {'buys': 0, 'sells': 0}
+        token_stats[symbol]['sells'] += count
+
+    # Process Base transactions
+    for symbol, count in base_buy_counts.items():
+        if symbol not in token_stats:
+            token_stats[symbol] = {'buys': 0, 'sells': 0}
+        token_stats[symbol]['buys'] += count
+    for symbol, count in base_sell_counts.items():
+        if symbol not in token_stats:
+            token_stats[symbol] = {'buys': 0, 'sells': 0}
+        token_stats[symbol]['sells'] += count
+
+    # Process Arbitrum transactions
+    for symbol, count in arbitrum_buy_counts.items():
+        if symbol not in token_stats:
+            token_stats[symbol] = {'buys': 0, 'sells': 0}
+        token_stats[symbol]['buys'] += count
+    for symbol, count in arbitrum_sell_counts.items():
         if symbol not in token_stats:
             token_stats[symbol] = {'buys': 0, 'sells': 0}
         token_stats[symbol]['sells'] += count
@@ -461,6 +487,16 @@ def start_monitors():
     solana_api_thread = threading.Thread(target=print_new_solana_transfers, daemon=True, name="Solana-API")
     solana_api_thread.start()
     threads.append(solana_api_thread)
+
+    # Start Base L2 monitoring (Alchemy)
+    base_thread = threading.Thread(target=print_new_base_transfers, daemon=True, name="Base")
+    base_thread.start()
+    threads.append(base_thread)
+
+    # Start Arbitrum monitoring (Alchemy)
+    arb_thread = threading.Thread(target=print_new_arbitrum_transfers, daemon=True, name="Arbitrum")
+    arb_thread.start()
+    threads.append(arb_thread)
 
     # Start background wallet batch scorer (Phase 2)
     batch_scorer.start()

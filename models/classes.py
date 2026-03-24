@@ -98,6 +98,27 @@ def initialize_prices():
         "PYTH": "pyth-network",
         "WIF": "dogwifcoin",
         "RENDER": "render-token",
+        "TRUMP": "official-trump",
+        "POPCAT": "popcat",
+        "FARTCOIN": "fartcoin",
+        "AI16Z": "ai16z",
+        "PENGU": "pudgy-penguins",
+        "JUP": "jupiter-exchange-solana",
+
+        # Base-native tokens
+        "AERO": "aerodrome-finance",
+        "BRETT": "brett",
+        "TOSHI": "toshi",
+        "DEGEN": "degen-base",
+        "VIRTUAL": "virtual-protocol",
+
+        # Arbitrum-native tokens
+        "GMX": "gmx",
+        "GNS": "gains-network",
+        "MAGIC": "magic",
+        "RDNT": "radiant-capital",
+        "PENDLE": "pendle",
+        "GRAIL": "camelot-token",
 
         # Native chain tokens
         "BTC": "bitcoin",

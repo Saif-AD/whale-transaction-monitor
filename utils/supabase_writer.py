@@ -26,6 +26,8 @@ _CHAIN_TABLE_MAP = {
     'solana':   'solana_transactions',
     'polygon':  'polygon_transactions',
     'xrp':      'xrp_transactions',
+    'base':     'base_transactions',
+    'arbitrum': 'arbitrum_transactions',
 }
 
 

@@ -42,6 +42,8 @@ _CHAIN_TABLES = [
     'solana_transactions',
     'polygon_transactions',
     'xrp_transactions',
+    'base_transactions',
+    'arbitrum_transactions',
 ]
 
 
@@ -123,6 +125,8 @@ class WalletProfiler:
                 'solana': 'solana_transactions',
                 'polygon': 'polygon_transactions',
                 'xrp': 'xrp_transactions',
+                'base': 'base_transactions',
+                'arbitrum': 'arbitrum_transactions',
             }
             t = table_map.get(chain.lower())
             tables = [t] if t else _CHAIN_TABLES
