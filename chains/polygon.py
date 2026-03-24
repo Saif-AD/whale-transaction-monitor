@@ -1,5 +1,5 @@
-"""
-Polygon PoS whale transaction monitor.
+from __future__ import annotations
+"""Polygon PoS whale transaction monitor.
 
 Primary: Alchemy alchemy_getAssetTransfers (single call covers all tokens).
 Fallback: PolygonScan tokentx per contract (if Alchemy fails).

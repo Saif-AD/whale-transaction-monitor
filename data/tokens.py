@@ -289,7 +289,6 @@ SOL_TOKENS_TO_MONITOR = {
     "AI16Z": {"mint": "HeLp6NuQkmYB4pYWo2zYs22mESHXPQYzXbB8n4V98jwC", "decimals": 9, "min_threshold": 2_000},
     "PENGU": {"mint": "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv", "decimals": 6, "min_threshold": 2_000},
     "W": {"mint": "85VBFQZC9TZkfaptBWjvUw7YbZjy52A6mjtPGjstQAmQ", "decimals": 6, "min_threshold": 5_000},
-    "ONDO": {"mint": "ONDO1111111111111111111111111111111111111112", "decimals": 9, "min_threshold": 5_000},
     "MEW": {"mint": "MEW1gQWJ3nEXg2qgERiKu7FAFj79PHvQVREQUzScPP5", "decimals": 5, "min_threshold": 2_000},
     "BOME": {"mint": "ukHH6c7mMyiWCf1b9pnWe25TSpkDDt3H5pQZgZ74J82", "decimals": 6, "min_threshold": 2_000},
     "JITO": {"mint": "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn", "decimals": 9, "min_threshold": 5_000},
