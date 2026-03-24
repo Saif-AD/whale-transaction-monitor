@@ -468,10 +468,7 @@ def start_monitors():
     if solana_grpc_thread:
         threads.append(solana_grpc_thread)
 
-    # Start Solana WebSocket as fallback
-    solana_ws_thread = start_solana_thread()
-    if solana_ws_thread:
-        threads.append(solana_ws_thread)
+    # Solana WebSocket removed — redundant with gRPC + API poller
 
     # Start Polygon monitoring (Alchemy primary, PolygonScan fallback)
     polygon_thread = threading.Thread(target=print_new_polygon_transfers, daemon=True, name="Polygon")
