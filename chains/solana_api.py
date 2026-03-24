@@ -95,23 +95,12 @@ def _classify_solana_transfer(from_addr, to_addr):
         return 'SELL'
     return 'TRANSFER'
 
-# All Solana tokens to track — includes stablecoins because they carry real volume on Solana
-TOP_SOLANA_TOKENS = [
-    "SOL", "BONK", "RAY", "ORCA", "MSOL", "PYTH", "BSOL", "RENDER",
-    "SAMO", "DUST", "SRM", "MNGO", "ATLAS", "MEAN", "SHDW", "COPE",
-]
-
 # SPL Token Program - used as fallback
 SPL_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 
 # Track last seen signature per token
 _last_seen_sig = {}
 _global_last_sig = None
-
-
-def _active_tokens():
-    """Return the subset of SOL_TOKENS_TO_MONITOR limited to TOP_SOLANA_TOKENS."""
-    return {k: v for k, v in SOL_TOKENS_TO_MONITOR.items() if k in TOP_SOLANA_TOKENS}
 
 
 def _mint_to_symbol():

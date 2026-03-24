@@ -413,6 +413,8 @@ function getAddrExplorerUrl(chain, addr) {
     if (c.includes('xrp') || c.includes('ripple')) return `https://xrpscan.com/account/${addr}`;
     if (c.includes('bitcoin')) return `https://blockstream.info/address/${addr}`;
     if (c.includes('polygon') || c.includes('matic')) return `https://polygonscan.com/address/${addr}`;
+    if (c.includes('base')) return `https://basescan.org/address/${addr}`;
+    if (c.includes('arbitrum')) return `https://arbiscan.io/address/${addr}`;
     return '';
 }
 
@@ -626,6 +628,10 @@ function getBlockchainIcon(blockchain) {
         icon = '<i class="fab fa-bitcoin blockchain-bitcoin me-1"></i>';
     } else if (chain.includes('polygon') || chain.includes('matic')) {
         icon = '<i class="fas fa-diamond me-1" style="color: #8247e5;"></i>';
+    } else if (chain.includes('base')) {
+        icon = '<i class="fas fa-layer-group me-1" style="color: #0052ff;"></i>';
+    } else if (chain.includes('arbitrum')) {
+        icon = '<i class="fas fa-infinity me-1" style="color: #28a0f0;"></i>';
     } else {
         icon = '<i class="fas fa-link me-1"></i>';
     }
@@ -672,6 +678,10 @@ function getBlockExplorerLink(blockchain, hash) {
         url = `https://blockstream.info/tx/${hash}`;
     } else if (chain.includes('polygon') || chain.includes('matic')) {
         url = `https://polygonscan.com/tx/${hash}`;
+    } else if (chain.includes('base')) {
+        url = `https://basescan.org/tx/${hash}`;
+    } else if (chain.includes('arbitrum')) {
+        url = `https://arbiscan.io/tx/${hash}`;
     } else {
         return '';
     }

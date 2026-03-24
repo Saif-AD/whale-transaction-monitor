@@ -42,7 +42,7 @@ class TransactionDeduplicator:
             to_addr = event.get('to', '')
             amount = str(event.get('amount', '0'))
             return (chain, tx_hash, to_addr, amount)
-        elif chain in ['ethereum', 'bsc', 'polygon']:
+        elif chain in ['ethereum', 'bsc', 'polygon', 'base', 'arbitrum']:
             return (chain, tx_hash, event.get('log_index', 0))
         elif chain == 'xrp':
             return (chain, tx_hash, event.get('sequence', 0))
@@ -69,7 +69,7 @@ class TransactionDeduplicator:
         # EVM multi-hop: a single DEX swap produces 3-4 internal ERC-20
         # transfer logs (user→router→pool→user). Only keep the first log
         # per tx_hash to avoid showing the same swap 4 times.
-        if chain in ('ethereum', 'polygon', 'bsc'):
+        if chain in ('ethereum', 'polygon', 'bsc', 'base', 'arbitrum'):
             tx_hash = event.get('tx_hash', '')
             if tx_hash:
                 if tx_hash in self._evm_seen_hashes:

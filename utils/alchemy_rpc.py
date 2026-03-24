@@ -18,6 +18,8 @@ from config.api_keys import (
     ALCHEMY_POLYGON_RPC,
     ALCHEMY_SOLANA_RPC,
     ALCHEMY_BITCOIN_RPC,
+    ALCHEMY_BASE_RPC,
+    ALCHEMY_ARBITRUM_RPC,
     HELIUS_RPC_URL,
 )
 from utils.base_helpers import safe_print
@@ -87,6 +89,8 @@ _CHAIN_RPC_MAP = {
     'polygon': ALCHEMY_POLYGON_RPC,
     'solana': ALCHEMY_SOLANA_RPC,
     'bitcoin': ALCHEMY_BITCOIN_RPC,
+    'base': ALCHEMY_BASE_RPC,
+    'arbitrum': ALCHEMY_ARBITRUM_RPC,
 }
 
 _CHAIN_FALLBACK_MAP = {

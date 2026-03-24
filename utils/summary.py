@@ -9,7 +9,9 @@ from config.settings import (
     etherscan_buy_counts, etherscan_sell_counts,
     whale_buy_counts, whale_sell_counts, whale_trending_counts,
     solana_buy_counts, solana_sell_counts,
-    xrp_buy_counts, xrp_sell_counts, xrp_payment_count, xrp_total_amount
+    xrp_buy_counts, xrp_sell_counts, xrp_payment_count, xrp_total_amount,
+    base_buy_counts, base_sell_counts,
+    arbitrum_buy_counts, arbitrum_sell_counts,
 )
 from chains.dune import get_transfer_volumes
 from models.classes import BitQueryAPI, DuneAnalytics, DefiLlamaData
@@ -363,8 +365,8 @@ def print_deduplication_stats():
             buys = xrp_buy_counts
             sells = xrp_sell_counts
         else:
-            buys = etherscan_buy_counts.get(token, 0) + whale_buy_counts.get(token, 0) + solana_buy_counts.get(token, 0)
-            sells = etherscan_sell_counts.get(token, 0) + whale_sell_counts.get(token, 0) + solana_sell_counts.get(token, 0)
+            buys = etherscan_buy_counts.get(token, 0) + whale_buy_counts.get(token, 0) + solana_buy_counts.get(token, 0) + base_buy_counts.get(token, 0) + arbitrum_buy_counts.get(token, 0)
+            sells = etherscan_sell_counts.get(token, 0) + whale_sell_counts.get(token, 0) + solana_sell_counts.get(token, 0) + base_sell_counts.get(token, 0) + arbitrum_sell_counts.get(token, 0)
         
         buys_sells = buys + sells
         dedup_ratio = (transfers / max(1, buys_sells)) * 100 if buys_sells > 0 else 100

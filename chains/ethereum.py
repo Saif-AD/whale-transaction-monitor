@@ -19,6 +19,9 @@ from utils.summary import has_been_classified, mark_as_classified
 from data.market_makers import MARKET_MAKER_ADDRESSES, FILTER_SETTINGS
 from utils.dedup import deduplicator, get_dedup_stats, deduped_transactions, handle_event
 
+import logging
+eth_logger = logging.getLogger(__name__)
+
 # Global variable for batch timing
 last_batch_storage_time = time.time()
 
@@ -229,11 +232,238 @@ def print_new_erc20_transfers():
         shutdown_flag.wait(timeout=60)
 
 
+# ---------------------------------------------------------------------------
+# Alchemy-based Ethereum ERC-20 transfer fetching (primary path)
+# ---------------------------------------------------------------------------
+
+# Track last scanned block for the Alchemy path
+_alchemy_last_block: int | None = None
+
+
+def _alchemy_fetch_eth_transfers(from_hex: str, to_hex: str, contract_addresses: list) -> list | None:
+    """Fetch ERC-20 transfers via Alchemy alchemy_getAssetTransfers.
+
+    Alchemy caps contractAddresses at ~5 per call, so we batch
+    if the list is longer and merge the results.
+    """
+    try:
+        from utils.alchemy_rpc import fetch_asset_transfers
+        BATCH_SIZE = 5
+        all_results: list = []
+
+        for i in range(0, len(contract_addresses), BATCH_SIZE):
+            batch = contract_addresses[i : i + BATCH_SIZE]
+            transfers = fetch_asset_transfers(
+                blockchain='ethereum',
+                from_block=from_hex,
+                to_block=to_hex,
+                contract_addresses=batch,
+                category=["erc20"],
+            )
+            if transfers:
+                all_results.extend(transfers)
+
+        return all_results if all_results else None
+    except Exception as e:
+        eth_logger.warning(f"Alchemy Ethereum transfers error: {e}")
+        return None
+
+
+def _process_alchemy_eth_transfer(tx: dict, contract_map: dict) -> dict | None:
+    """Process an Alchemy alchemy_getAssetTransfers result into an event."""
+    raw_contract = (tx.get("rawContract") or {})
+    contract_addr = raw_contract.get("address", "").lower()
+    symbol_info = contract_map.get(contract_addr)
+    if not symbol_info:
+        return None
+
+    symbol, decimals = symbol_info
+    price = TOKEN_PRICES.get(symbol, 0)
+    if price == 0:
+        return None
+
+    value = tx.get("value")
+    if value is None:
+        raw_hex = raw_contract.get("value", "0x0")
+        try:
+            raw_int = int(raw_hex, 16)
+            value = raw_int / (10 ** decimals)
+        except (ValueError, TypeError):
+            return None
+
+    usd_value = float(value) * price
+    if usd_value < GLOBAL_USD_THRESHOLD:
+        return None
+
+    return {
+        "blockchain": "ethereum",
+        "tx_hash": tx.get("hash", ""),
+        "from": tx.get("from", ""),
+        "to": tx.get("to", ""),
+        "symbol": symbol,
+        "amount": float(value),
+        "usd_value": usd_value,
+        "estimated_usd": usd_value,
+        "timestamp": time.time(),
+        "source": "ethereum_alchemy",
+        "block_num": tx.get("blockNum", ""),
+    }
+
+
+def _classify_and_store_eth(event: dict):
+    """Classify an Ethereum Alchemy event and route through dedup pipeline."""
+    from_addr = event.get('from', '')
+    to_addr = event.get('to', '')
+    symbol = event.get('symbol', '')
+
+    # Whale-relevance filter for major tokens
+    if not _is_whale_relevant_transaction(from_addr, to_addr, symbol):
+        return
+
+    # Process through the universal classifier
+    classification = 'TRANSFER'
+    confidence = 0.0
+    enriched_transaction = None
+    try:
+        from utils.classification_final import process_and_enrich_transaction
+        enriched_transaction = process_and_enrich_transaction(event)
+        if enriched_transaction:
+            if isinstance(enriched_transaction, dict):
+                classification = enriched_transaction.get('classification', 'TRANSFER')
+                confidence = enriched_transaction.get('confidence', 0.0)
+            elif hasattr(enriched_transaction, 'classification'):
+                classification = enriched_transaction.classification.value if hasattr(enriched_transaction.classification, 'value') else str(enriched_transaction.classification)
+                confidence = getattr(enriched_transaction, 'confidence', 0.0)
+    except Exception:
+        pass
+
+    event['classification'] = classification.upper()
+    if 'usd_value' not in event:
+        event['usd_value'] = event.get('estimated_usd', 0)
+
+    if not handle_event(event):
+        return
+
+    # Update counters
+    if classification.upper() in ("BUY", "MODERATE_BUY", "BUY_MODERATE"):
+        etherscan_buy_counts[symbol] += 1
+    elif classification.upper() in ("SELL", "MODERATE_SELL", "SELL_MODERATE"):
+        etherscan_sell_counts[symbol] += 1
+
+    estimated_usd = event.get('usd_value', event.get('estimated_usd', 0))
+    whale_indicator = ""
+    if isinstance(enriched_transaction, dict) and enriched_transaction.get('is_whale_transaction'):
+        whale_indicator = " 🐋"
+
+    safe_print(f"\n[{symbol} | ${estimated_usd:,.2f} USD] Alchemy | Tx {event['tx_hash'][:24]}...{whale_indicator}")
+    safe_print(f"  From: {from_addr[:24]}...")
+    safe_print(f"  To:   {to_addr[:24]}...")
+    safe_print(f"  Amount: {event['amount']:,.2f} {symbol} (~${estimated_usd:,.2f} USD)")
+    safe_print(f"  Classification: {classification.upper()} (confidence: {confidence:.2f})")
+
+    record_transfer(symbol, event['amount'], from_addr, to_addr, event['tx_hash'])
+
+    # Persist to Supabase
+    if enriched_transaction:
+        try:
+            from utils.supabase_writer import store_transaction
+            classification_data = {
+                'classification': classification.upper() if classification else 'TRANSFER',
+                'confidence': confidence,
+                'whale_score': enriched_transaction.get('whale_score', 0.0) if isinstance(enriched_transaction, dict) else 0.0,
+                'reasoning': enriched_transaction.get('reasoning', '') if isinstance(enriched_transaction, dict) else '',
+            }
+            store_transaction(event, classification_data)
+        except Exception as e:
+            safe_print(f"  Supabase write error: {e}")
+
+
+def _poll_alchemy_transfers_once() -> bool:
+    """Try to poll Ethereum ERC-20 transfers via Alchemy.
+
+    Returns True if Alchemy succeeded, False if we should fall back to Etherscan.
+    """
+    global _alchemy_last_block
+
+    try:
+        from utils.alchemy_rpc import fetch_eth_block_number
+        tip = fetch_eth_block_number('ethereum')
+    except Exception:
+        return False
+
+    if tip is None:
+        return False
+
+    if _alchemy_last_block is None:
+        _alchemy_last_block = tip
+        return True  # First run — seed the pointer, skip processing
+
+    if tip <= _alchemy_last_block:
+        return True  # No new blocks
+
+    # Ethereum ~12s block time, 60s poll → ~5 blocks. Cap at 20 to avoid huge scans.
+    scan_from = max(_alchemy_last_block + 1, tip - 20)
+    from_hex = hex(scan_from)
+    to_hex = hex(tip)
+    blocks_scanned = tip - scan_from + 1
+
+    contract_addresses = [info["contract"] for info in TOKENS_TO_MONITOR.values()]
+    contract_map = {
+        info["contract"].lower(): (symbol, info["decimals"])
+        for symbol, info in TOKENS_TO_MONITOR.items()
+    }
+
+    transfers = _alchemy_fetch_eth_transfers(from_hex, to_hex, contract_addresses)
+    if transfers is None:
+        # Alchemy call failed — signal fallback
+        return False
+
+    seen_hashes: set = set()
+    processed = 0
+    for tx in transfers:
+        event = _process_alchemy_eth_transfer(tx, contract_map)
+        if event and event['tx_hash'] not in seen_hashes:
+            seen_hashes.add(event['tx_hash'])
+            # Fetch receipt for high-value txs
+            if event.get('usd_value', 0) >= 50_000:
+                try:
+                    from utils.alchemy_rpc import fetch_evm_receipt
+                    receipt = fetch_evm_receipt(event['tx_hash'], 'ethereum')
+                    if receipt:
+                        event['receipt'] = receipt
+                except Exception:
+                    pass
+            _classify_and_store_eth(event)
+            processed += 1
+
+    if processed > 0:
+        safe_print(f"  Alchemy Ethereum transfers: {processed} whale tx in {blocks_scanned} blocks")
+
+    _alchemy_last_block = tip
+    return True
+
+
 def _poll_erc20_transfers_once():
-    """Single polling cycle for ERC-20 transfers."""
-    global last_processed_block
+    """Single polling cycle for ERC-20 transfers.
+
+    Primary: Alchemy alchemy_getAssetTransfers (batched, all tokens).
+    Fallback: Etherscan per-token polling (if Alchemy fails).
+    """
     current_time = time.strftime('%Y-%m-%d %H:%M:%S')
     safe_print(f"\n[{current_time}] 🔍 Checking ERC-20 transfers...")
+
+    # Try Alchemy first
+    if _poll_alchemy_transfers_once():
+        return
+
+    # Alchemy failed — fall back to Etherscan per-token polling
+    safe_print("  Alchemy Ethereum unavailable, using Etherscan fallback")
+    _poll_etherscan_transfers_once()
+
+
+def _poll_etherscan_transfers_once():
+    """Etherscan-based per-token polling (fallback path)."""
+    global last_processed_block
 
     transactions_processed = 0
 
@@ -243,7 +473,7 @@ def _poll_erc20_transfers_once():
         contract = info["contract"]
         decimals = info["decimals"]
         price = TOKEN_PRICES.get(symbol, 0)
-        
+
         if price == 0:
             safe_print(f"Skipping {symbol} - no price data")
             continue
@@ -256,7 +486,7 @@ def _poll_erc20_transfers_once():
         transfers = fetch_erc20_transfers(contract, sort="desc", start_block=start_block)
         if not transfers:
             continue
-            
+
         new_transfers = []
         for tx in transfers:
             block_num = int(tx["blockNumber"])
@@ -272,23 +502,21 @@ def _poll_erc20_transfers_once():
         MAX_PER_TOKEN_PER_CYCLE = 10
         if len(new_transfers) > MAX_PER_TOKEN_PER_CYCLE:
             new_transfers = new_transfers[:MAX_PER_TOKEN_PER_CYCLE]
-            
+
         for tx in reversed(new_transfers):
             try:
                 raw_value = int(tx["value"])
                 token_amount = raw_value / (10 ** decimals)
                 estimated_usd = token_amount * price
-                
+
                 if estimated_usd >= GLOBAL_USD_THRESHOLD:
                     from_addr = tx["from"]
                     to_addr = tx["to"]
                     tx_hash = tx["hash"]
-                    
-                    # 🚀 PROFESSIONAL DEX/CEX FILTERING: Only process whale-relevant transactions
+
                     if not _is_whale_relevant_transaction(from_addr, to_addr, symbol):
                         continue
-                    
-                    # Create event for deduplication
+
                     event = {
                         "blockchain": "ethereum",
                         "tx_hash": tx_hash,
@@ -310,12 +538,10 @@ def _poll_erc20_transfers_once():
                         except Exception:
                             pass
 
-                    # Process through the universal processor
                     from utils.classification_final import process_and_enrich_transaction
 
                     enriched_transaction = process_and_enrich_transaction(event)
 
-                    # Extract classification from enrichment result
                     classification = 'TRANSFER'
                     confidence = 0.0
                     if enriched_transaction:
@@ -326,7 +552,6 @@ def _poll_erc20_transfers_once():
                             classification = enriched_transaction.classification.value if hasattr(enriched_transaction.classification, 'value') else str(enriched_transaction.classification)
                             confidence = getattr(enriched_transaction, 'confidence', 0.0)
 
-                    # Route through dedup pipeline so Flask dashboard shows ETH transactions
                     event['classification'] = classification.upper()
                     event['usd_value'] = estimated_usd
                     handle_event(event)
@@ -337,7 +562,6 @@ def _poll_erc20_transfers_once():
 
                         transactions_processed += 1
 
-                        # Update counters
                         if classification.upper() in ("BUY", "MODERATE_BUY", "BUY_MODERATE"):
                             etherscan_buy_counts[symbol] += 1
                         elif classification.upper() in ("SELL", "MODERATE_SELL", "SELL_MODERATE"):
@@ -357,10 +581,8 @@ def _poll_erc20_transfers_once():
                         if isinstance(enriched_transaction, dict) and enriched_transaction.get('whale_classification'):
                             safe_print(f"  Whale Analysis: {enriched_transaction['whale_classification']}")
 
-                        # Record transfer for volume tracking
                         record_transfer(symbol, token_amount, from_addr, to_addr, tx_hash)
-                    
-                    # Persist enriched transaction to Supabase
+
                     if enriched_transaction:
                         try:
                             from utils.supabase_writer import store_transaction
@@ -373,7 +595,7 @@ def _poll_erc20_transfers_once():
                             store_transaction(event, classification_data)
                         except Exception as e:
                             safe_print(f"  Supabase write error: {e}")
-                    
+
             except Exception as e:
                 error_msg = f"Error processing {symbol} transfer: {str(e)}"
                 safe_print(error_msg)

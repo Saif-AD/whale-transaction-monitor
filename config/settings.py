@@ -125,6 +125,14 @@ solana_last_processed_signature = defaultdict(str)
 bitcoin_buy_counts = defaultdict(int)
 bitcoin_sell_counts = defaultdict(int)
 
+# Base L2 counters
+base_buy_counts = defaultdict(int)
+base_sell_counts = defaultdict(int)
+
+# Arbitrum counters
+arbitrum_buy_counts = defaultdict(int)
+arbitrum_sell_counts = defaultdict(int)
+
 
 # Transaction monitoring thresholds
 GLOBAL_USD_THRESHOLD = 10_000
@@ -136,6 +144,8 @@ CHAIN_USD_THRESHOLDS = {
     'polygon': 10_000,
     'solana': 1_000,
     'xrp': 50_000,
+    'base': 10_000,
+    'arbitrum': 10_000,
 }
 
 def get_chain_threshold(blockchain: str) -> float:
@@ -163,6 +173,16 @@ DEX_CONTRACTS = {
     },
     "solana": {
         "jupiter_program_id": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+    },
+    "base": {
+        "uniswap_v3_router": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+        "uniswap_v3_factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+        "aerodrome_router": "0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43",
+    },
+    "arbitrum": {
+        "uniswap_v3_router": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+        "uniswap_v3_factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+        "camelot_router": "0xc873fEcbd354f5A56E00E710B90EF4201db2448d",
     }
 }
 
@@ -184,6 +204,14 @@ STABLECOINS = {
     "solana": {
         "USDC": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
         "USDT": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+    },
+    "base": {
+        "USDC": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "USDbC": "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA",
+    },
+    "arbitrum": {
+        "USDC": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+        "USDT": "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
     }
 }
 
