@@ -396,6 +396,7 @@ def _poll_alchemy_transfers_once() -> bool:
     """Try to poll Ethereum ERC-20 transfers via Alchemy.
 
     Returns True if Alchemy succeeded, False if we should fall back to Etherscan.
+    Always advances the block pointer to prevent re-scanning stale ranges.
     """
     global _alchemy_last_block
 
@@ -423,7 +424,8 @@ def _poll_alchemy_transfers_once() -> bool:
 
     transfers = _alchemy_fetch_eth_transfers(from_hex, to_hex, _ETH_CONTRACT_ADDRESSES)
     if transfers is None:
-        # Alchemy call failed — signal fallback
+        # Alchemy failed — still advance pointer so we don't re-scan old blocks
+        _alchemy_last_block = tip
         return False
 
     seen_hashes: set = set()
@@ -451,22 +453,32 @@ def _poll_alchemy_transfers_once() -> bool:
     return True
 
 
+_alchemy_consecutive_failures = 0
+
 def _poll_erc20_transfers_once():
     """Single polling cycle for ERC-20 transfers.
 
     Primary: Alchemy alchemy_getAssetTransfers (batched, all tokens).
-    Fallback: Etherscan per-token polling (if Alchemy fails).
+    Fallback: Etherscan per-token polling (only after 3 consecutive Alchemy failures).
     """
+    global _alchemy_consecutive_failures
+
     current_time = time.strftime('%Y-%m-%d %H:%M:%S')
     safe_print(f"\n[{current_time}] 🔍 Checking ERC-20 transfers...")
 
-    # Try Alchemy first
     if _poll_alchemy_transfers_once():
+        _alchemy_consecutive_failures = 0
         return
 
-    # Alchemy failed — fall back to Etherscan per-token polling
-    safe_print("  Alchemy Ethereum unavailable, using Etherscan fallback")
-    _poll_etherscan_transfers_once()
+    _alchemy_consecutive_failures += 1
+    safe_print(f"  Alchemy Ethereum failed ({_alchemy_consecutive_failures}/3)")
+
+    # Only fall back to Etherscan after 3 consecutive failures
+    # Single blips shouldn't trigger a 60s Etherscan crawl
+    if _alchemy_consecutive_failures >= 3:
+        safe_print("  Alchemy down 3 cycles — using Etherscan fallback")
+        _poll_etherscan_transfers_once()
+        _alchemy_consecutive_failures = 0
 
 
 def _poll_etherscan_transfers_once():
