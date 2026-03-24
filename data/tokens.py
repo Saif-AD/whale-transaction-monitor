@@ -56,6 +56,41 @@ TOKENS_TO_MONITOR = {
     "1INCH": {"contract": "0x111111111117dC0aa78b770fA6A738034120C302", "decimals": 18, "min_threshold": 5_000},
     "CVX": {"contract": "0x4e3FBD56CD56c3e72c1403e103b45Db9da5B9D2B", "decimals": 18, "min_threshold": 5_000},
     "DYDX": {"contract": "0x92D6C1e31e14520e676a687F0a93788B716BEff5", "decimals": 18, "min_threshold": 6_000},
+
+    # 🚀 2024-2025 high-volume large caps
+    "VIRTUAL": {"contract": "0x44ff8620b8ca30902395a7bd3f2407e1a091bf73", "decimals": 18, "min_threshold": 8_000},
+    "WLD": {"contract": "0x163f8c2467924be0ae7b5347228cabf260318753", "decimals": 18, "min_threshold": 10_000},
+    "ENA": {"contract": "0x57e114b691db790c35207b2e685d4a43181e6061", "decimals": 18, "min_threshold": 8_000},
+    "EIGEN": {"contract": "0xec53bf9167f50cdeb3ae105f56099aaab9061f83", "decimals": 18, "min_threshold": 10_000},
+    "ONDO": {"contract": "0xfaba6f8e4a5e8ab82f62fe7c39859fa577269be3", "decimals": 18, "min_threshold": 10_000},
+    "W": {"contract": "0xb0ffa8000886e57f86dd5264b9582b2ad87b2b91", "decimals": 18, "min_threshold": 8_000},
+    "MNT": {"contract": "0x3c3a81e81dc49a522a592e7622a7e711c06bf354", "decimals": 18, "min_threshold": 8_000},
+    "PENDLE": {"contract": "0x808507121b80c02388fad14726482e061b8da827", "decimals": 18, "min_threshold": 8_000},
+    "ETHFI": {"contract": "0xfe0c30065b384f05761f15d0cc899d4f9f9cc0eb", "decimals": 18, "min_threshold": 8_000},
+    "wTAO": {"contract": "0x77e06c9eccf2e797fd462a92b6d7642ef85b0a44", "decimals": 9, "min_threshold": 10_000},
+
+    # 💎 Established large/mid caps with whale activity
+    "QNT": {"contract": "0x4a220e6096b25eadb88358cb44068a3248254675", "decimals": 18, "min_threshold": 10_000},
+    "CRO": {"contract": "0xa0b73e1ff0b80914ab6fe0444e65848c4c34450b", "decimals": 8, "min_threshold": 8_000},
+    "INJ": {"contract": "0xe28b3b32b6c345a34ff64674606124dd5aceca30", "decimals": 18, "min_threshold": 8_000},
+    "STRK": {"contract": "0xca14007eff0db1f8135f4c25b34de49ab0d42766", "decimals": 18, "min_threshold": 6_000},
+    "RPL": {"contract": "0xd33526068d116ce69f19a9ee46f0bd304f21a51f", "decimals": 18, "min_threshold": 8_000},
+    "SSV": {"contract": "0x9d65ff81a3c488d585bbfb0bfe3c7707c7917f54", "decimals": 18, "min_threshold": 8_000},
+
+    # 🎮 Gaming/Metaverse mid caps
+    "AXS": {"contract": "0xbb0e17ef65f82ab018d8edd776e8dd940327b28b", "decimals": 18, "min_threshold": 8_000},
+    "GALA": {"contract": "0x15d4c048f83bd7e37d49ea4c83a07267ec4203da", "decimals": 8, "min_threshold": 5_000},
+    "CHZ": {"contract": "0x3506424f91fd33084466f402d5d97f05f8e3b4af", "decimals": 18, "min_threshold": 5_000},
+    "ILV": {"contract": "0x767fe9edc9e0df98e07454847909b5e959d7ca0e", "decimals": 18, "min_threshold": 8_000},
+
+    # 🔋 Infrastructure / Oracles
+    "LPT": {"contract": "0x58b6a8a3302369daec383334672404ee733ab239", "decimals": 18, "min_threshold": 6_000},
+    "NMR": {"contract": "0x1776e1f26f98b1a5df9cd347953a26dd3cb46671", "decimals": 18, "min_threshold": 6_000},
+    "LRC": {"contract": "0xbbbbca6a901c926f240b89eacb641d8aec7aeafd", "decimals": 18, "min_threshold": 5_000},
+    "ZRX": {"contract": "0xe41d2489571d322189246dafa5ebde1f4699f498", "decimals": 18, "min_threshold": 5_000},
+    "BAT": {"contract": "0x0d8775f648430679a709e98d2b0cb6250d2887ef", "decimals": 18, "min_threshold": 5_000},
+    "ENJ": {"contract": "0xf629cbd94d3791c9250152bd8dfbdf380e2a3b9c", "decimals": 18, "min_threshold": 5_000},
+    "OCEAN": {"contract": "0x967da4048cd07ab37855c090aaf366e4ce1b9f48", "decimals": 18, "min_threshold": 6_000},
 }
 
 # 🏛️ PROFESSIONAL-GRADE TOP 100 ERC-20 TOKEN MONITORING LIST
@@ -253,6 +288,11 @@ SOL_TOKENS_TO_MONITOR = {
     "FARTCOIN": {"mint": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump", "decimals": 6, "min_threshold": 2_000},
     "AI16Z": {"mint": "HeLp6NuQkmYB4pYWo2zYs22mESHXPQYzXbB8n4V98jwC", "decimals": 9, "min_threshold": 2_000},
     "PENGU": {"mint": "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv", "decimals": 6, "min_threshold": 2_000},
+    "W": {"mint": "85VBFQZC9TZkfaptBWjvUw7YbZjy52A6mjtPGjstQAmQ", "decimals": 6, "min_threshold": 5_000},
+    "ONDO": {"mint": "ONDO1111111111111111111111111111111111111112", "decimals": 9, "min_threshold": 5_000},
+    "MEW": {"mint": "MEW1gQWJ3nEXg2qgERiKu7FAFj79PHvQVREQUzScPP5", "decimals": 5, "min_threshold": 2_000},
+    "BOME": {"mint": "ukHH6c7mMyiWCf1b9pnWe25TSpkDDt3H5pQZgZ74J82", "decimals": 6, "min_threshold": 2_000},
+    "JITO": {"mint": "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn", "decimals": 9, "min_threshold": 5_000},
 }
 
 # --- TOKEN PRICES (USD) for ERC‑20 tokens ---
@@ -446,6 +486,9 @@ BASE_TOKENS_TO_MONITOR = {
     "BRETT": {"contract": "0x532f27101965dd16442E59d40670FaF5eBB142E4", "decimals": 18, "min_threshold": 5_000},
     "TOSHI": {"contract": "0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4", "decimals": 18, "min_threshold": 3_000},
     "DEGEN": {"contract": "0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed", "decimals": 18, "min_threshold": 3_000},
+    "MORPHO": {"contract": "0xBAa5CC21fd487B8Fcc2F632f3F4E8D37262a0842", "decimals": 18, "min_threshold": 5_000},
+    "HIGHER": {"contract": "0x0578d8A44db98B23BF096A382e016e29a5Ce0ffe", "decimals": 18, "min_threshold": 3_000},
+    "WELL": {"contract": "0xA88594D404727625A9437C3f886C7643872296AE", "decimals": 18, "min_threshold": 3_000},
 }
 
 # --- Arbitrum One tokens to monitor (chain-native only) ---
@@ -457,6 +500,9 @@ ARBITRUM_TOKENS_TO_MONITOR = {
     "RDNT": {"contract": "0x3082CC23568eA640225c2467653dB90e9250AaA0", "decimals": 18, "min_threshold": 3_000},
     "PENDLE": {"contract": "0x0c880f6761F1af8d9Aa9C466984b80DAb9a8c9e8", "decimals": 18, "min_threshold": 5_000},
     "GRAIL": {"contract": "0x3d9907F9a368ad0a51Be60f7Da3b97cf940982D8", "decimals": 18, "min_threshold": 5_000},
+    "DPX": {"contract": "0x6C2C06790b3E3E3c38e12Ee22F8183b37a13EE55", "decimals": 18, "min_threshold": 5_000},
+    "JONES": {"contract": "0x10393c20975cF177a3513071bC110f7962CD67da", "decimals": 18, "min_threshold": 3_000},
+    "VELA": {"contract": "0x088cd8f5eF3652623c22D48b1605DCfE860Cd704", "decimals": 18, "min_threshold": 3_000},
 }
 
 # Update TOKEN_PRICES with Base and Arbitrum chain-native token prices
@@ -466,7 +512,9 @@ TOKEN_PRICES.update({
     "BRETT": 0.10,
     "TOSHI": 0.0005,
     "DEGEN": 0.008,
-    "VIRTUAL": 1.50,
+    "MORPHO": 2.50,
+    "HIGHER": 0.02,
+    "WELL": 0.04,
 
     # Arbitrum-native tokens
     "GMX": 30.0,
@@ -475,6 +523,25 @@ TOKEN_PRICES.update({
     "RDNT": 0.08,
     "PENDLE": 4.50,
     "GRAIL": 1500,
+    "DPX": 15.0,
+    "JONES": 0.30,
+    "VELA": 1.50,
+
+    # 2024-2025 ETH large caps (fallback prices)
+    "VIRTUAL": 1.50,
+    "WLD": 2.50,
+    "ENA": 0.80,
+    "EIGEN": 3.50,
+    "ONDO": 1.20,
+    "W": 0.30,
+    "MNT": 0.80,
+    "ETHFI": 2.00,
+    "wTAO": 400,
+
+    # Solana additions
+    "MEW": 0.003,
+    "BOME": 0.008,
+    "JITO": 3.50,
 })
 
 STABLE_COINS = {"usdt", "usdc", "dai", "tusd", "busd"}

@@ -105,12 +105,39 @@ def initialize_prices():
         "PENGU": "pudgy-penguins",
         "JUP": "jupiter-exchange-solana",
 
+        # 2024-2025 ETH large caps
+        "WLD": "worldcoin-wld",
+        "ENA": "ethena",
+        "EIGEN": "eigenlayer",
+        "ONDO": "ondo-finance",
+        "W": "wormhole",
+        "MNT": "mantle",
+        "ETHFI": "ether-fi",
+        "wTAO": "wrapped-tao",
+
+        # ETH mid caps
+        "AXS": "axie-infinity",
+        "GALA": "gala",
+        "CHZ": "chiliz",
+        "ILV": "illuvium",
+        "LPT": "livepeer",
+        "NMR": "numeraire",
+        "LRC": "loopring",
+        "ZRX": "0x",
+        "BAT": "basic-attention-token",
+        "ENJ": "enjincoin",
+        "OCEAN": "ocean-protocol",
+        "STRK": "starknet",
+
         # Base-native tokens
         "AERO": "aerodrome-finance",
         "BRETT": "brett",
         "TOSHI": "toshi",
         "DEGEN": "degen-base",
         "VIRTUAL": "virtual-protocol",
+        "MORPHO": "morpho",
+        "HIGHER": "higher",
+        "WELL": "moonwell",
 
         # Arbitrum-native tokens
         "GMX": "gmx",
@@ -119,6 +146,14 @@ def initialize_prices():
         "RDNT": "radiant-capital",
         "PENDLE": "pendle",
         "GRAIL": "camelot-token",
+        "DPX": "dopex",
+        "JONES": "jones-dao",
+        "VELA": "vela-exchange",
+
+        # Solana additions
+        "MEW": "cat-in-a-dogs-world",
+        "BOME": "book-of-meme",
+        "JITO": "jito-staked-sol",
 
         # Native chain tokens
         "BTC": "bitcoin",
