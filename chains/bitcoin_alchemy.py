@@ -400,15 +400,20 @@ def _classify_bitcoin_utxo(from_addr, to_addr, value_btc, vin, vout,
         return "MINING_REWARD"
 
     # 2. Exchange flow — the #1 signal
-    # Check if any input is from an exchange (withdrawal → BUY)
-    if any_input_exchange and not to_is_exchange:
-        return "BUY"
-    # Check if output goes to exchange from non-exchange inputs (deposit → SELL)
-    if to_is_exchange and not any_input_exchange:
-        return "SELL"
     # Both sides exchange → internal transfer
     if to_is_exchange and any_input_exchange:
         return "TRANSFER"
+    # Exchange withdrawal to non-exchange address
+    if any_input_exchange and not to_is_exchange:
+        # Large single-output txs from exchanges are likely cold wallet rotation,
+        # not real withdrawals. Real user withdrawals are typically <100 BTC.
+        # Exchange housekeeping moves 1000+ BTC between their own wallets.
+        if value_btc >= 100 and num_outputs <= 3:
+            return "TRANSFER"
+        return "BUY"
+    # Deposit to exchange from non-exchange inputs
+    if to_is_exchange and not any_input_exchange:
+        return "SELL"
 
     # 3. Consolidation: many inputs -> 1-2 outputs
     if num_inputs >= 5 and num_outputs <= 2:
