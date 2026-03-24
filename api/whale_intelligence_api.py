@@ -198,7 +198,8 @@ async def get_whale_signals(
             elif tx['classification'] == 'SELL':
                 stats['sells'] += 1
             
-            stats['total_volume'] += float(tx['usd_value'] or 0)
+            tx_usd = min(float(tx['usd_value'] or 0), 500_000_000)  # Cap per-tx at $500M
+            stats['total_volume'] += tx_usd
             stats['confidences'].append(float(tx['confidence'] or 0))
             stats['whale_scores'].append(float(tx['whale_score'] or 0))
             stats['transaction_count'] += 1
