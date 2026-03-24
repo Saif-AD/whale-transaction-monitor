@@ -239,17 +239,26 @@ def print_new_erc20_transfers():
 # Track last scanned block for the Alchemy path
 _alchemy_last_block: int | None = None
 
+# Pre-built contract lists (avoid rebuilding every cycle)
+_ETH_CONTRACT_ADDRESSES = [info["contract"] for info in TOKENS_TO_MONITOR.values()]
+_ETH_CONTRACT_MAP = {
+    info["contract"].lower(): (symbol, info["decimals"])
+    for symbol, info in TOKENS_TO_MONITOR.items()
+}
+
 
 def _alchemy_fetch_eth_transfers(from_hex: str, to_hex: str, contract_addresses: list) -> list | None:
     """Fetch ERC-20 transfers via Alchemy alchemy_getAssetTransfers.
 
-    Alchemy caps contractAddresses at ~5 per call, so we batch
-    if the list is longer and merge the results.
+    Alchemy caps contractAddresses at ~5 per call, so we batch.
+    Returns partial results if some batches fail (resilient).
+    Only returns None if ALL batches fail.
     """
     try:
         from utils.alchemy_rpc import fetch_asset_transfers
         BATCH_SIZE = 5
         all_results: list = []
+        failures = 0
 
         for i in range(0, len(contract_addresses), BATCH_SIZE):
             batch = contract_addresses[i : i + BATCH_SIZE]
@@ -262,8 +271,13 @@ def _alchemy_fetch_eth_transfers(from_hex: str, to_hex: str, contract_addresses:
             )
             if transfers:
                 all_results.extend(transfers)
+            else:
+                failures += 1
 
-        return all_results if all_results else None
+        total_batches = (len(contract_addresses) + BATCH_SIZE - 1) // BATCH_SIZE
+        if failures == total_batches:
+            return None  # All batches failed — trigger Etherscan fallback
+        return all_results  # Return whatever we got (even empty list = success with no transfers)
     except Exception as e:
         eth_logger.warning(f"Alchemy Ethereum transfers error: {e}")
         return None
@@ -407,13 +421,7 @@ def _poll_alchemy_transfers_once() -> bool:
     to_hex = hex(tip)
     blocks_scanned = tip - scan_from + 1
 
-    contract_addresses = [info["contract"] for info in TOKENS_TO_MONITOR.values()]
-    contract_map = {
-        info["contract"].lower(): (symbol, info["decimals"])
-        for symbol, info in TOKENS_TO_MONITOR.items()
-    }
-
-    transfers = _alchemy_fetch_eth_transfers(from_hex, to_hex, contract_addresses)
+    transfers = _alchemy_fetch_eth_transfers(from_hex, to_hex, _ETH_CONTRACT_ADDRESSES)
     if transfers is None:
         # Alchemy call failed — signal fallback
         return False
@@ -421,7 +429,7 @@ def _poll_alchemy_transfers_once() -> bool:
     seen_hashes: set = set()
     processed = 0
     for tx in transfers:
-        event = _process_alchemy_eth_transfer(tx, contract_map)
+        event = _process_alchemy_eth_transfer(tx, _ETH_CONTRACT_MAP)
         if event and event['tx_hash'] not in seen_hashes:
             seen_hashes.add(event['tx_hash'])
             # Fetch receipt for high-value txs
