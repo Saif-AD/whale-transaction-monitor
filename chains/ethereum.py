@@ -408,6 +408,7 @@ def _classify_and_store_eth(event: dict):
             usd_val = float(event.get('usd_value', event.get('estimated_usd', 0)) or 0)
             has_labels = bool(from_label or to_label)
             interp_threshold = INTERPRETER_LABELED_USD_THRESHOLD if has_labels else INTERPRETER_UNLABELED_USD_THRESHOLD
+            eth_logger.info("INTERP_DEBUG: enabled=%s usd_val=%s threshold=%s has_labels=%s", INTERPRETER_ENABLED, usd_val, interp_threshold, has_labels)
             if INTERPRETER_ENABLED and usd_val >= interp_threshold:
                 try:
                     from shared.interpreter import generate_interpretation
