@@ -185,3 +185,4 @@ config/bigquery_credentials.json
 config/*credentials*
 config/*.key
 config/*.pem
+.cursor/

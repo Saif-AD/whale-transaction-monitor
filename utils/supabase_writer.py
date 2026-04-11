@@ -30,6 +30,9 @@ _CHAIN_TABLE_MAP = {
     'arbitrum': 'arbitrum_transactions',
 }
 
+# Public alias for backfill scripts and tooling
+CHAIN_TABLE_MAP = _CHAIN_TABLE_MAP
+
 
 def _get_client():
     """Lazy-init Supabase client (thread-safe)."""

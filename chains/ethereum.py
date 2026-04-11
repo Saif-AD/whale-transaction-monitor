@@ -378,16 +378,50 @@ def _classify_and_store_eth(event: dict):
 
     record_transfer(symbol, event['amount'], from_addr, to_addr, event['tx_hash'])
 
-    # Persist to Supabase
+    # Whale tx enrichment order — DO NOT REORDER:
+    # 1. classify (sets classification, confidence, whale_score, template reasoning)
+    # 2. lookup_labels (sets from_label, to_label from addresses table)
+    # 3. generate_interpretation (uses labels to write audience-facing reasoning)
+    # 4. store_transaction (writes the enriched row)
     if enriched_transaction:
         try:
             from utils.supabase_writer import store_transaction
+            from shared.address_labels import lookup_labels
             classification_data = {
                 'classification': classification.upper() if classification else 'TRANSFER',
                 'confidence': confidence,
                 'whale_score': enriched_transaction.get('whale_score', 0.0) if isinstance(enriched_transaction, dict) else 0.0,
                 'reasoning': enriched_transaction.get('reasoning', '') if isinstance(enriched_transaction, dict) else '',
             }
+            # Step 2: label lookup
+            from_label, to_label = lookup_labels(
+                from_addr, to_addr, event.get('blockchain', 'ethereum'),
+            )
+            classification_data['from_label'] = from_label
+            classification_data['to_label'] = to_label
+            # Step 3: interpreter (audience-facing reasoning)
+            from shared.config import (
+                INTERPRETER_ENABLED, INTERPRETER_LABELED_USD_THRESHOLD,
+                INTERPRETER_UNLABELED_USD_THRESHOLD,
+            )
+            template_reasoning = classification_data['reasoning']
+            usd_val = float(event.get('usd_value', event.get('estimated_usd', 0)) or 0)
+            has_labels = bool(from_label or to_label)
+            interp_threshold = INTERPRETER_LABELED_USD_THRESHOLD if has_labels else INTERPRETER_UNLABELED_USD_THRESHOLD
+            if INTERPRETER_ENABLED and usd_val >= interp_threshold:
+                try:
+                    from shared.interpreter import generate_interpretation
+                    tx_for_interp = {
+                        'transaction_hash': event.get('tx_hash', ''),
+                        'token_symbol': event.get('symbol', ''),
+                        'usd_value': usd_val,
+                        'blockchain': event.get('blockchain', 'ethereum'),
+                        **classification_data,
+                    }
+                    classification_data['reasoning'] = generate_interpretation(tx_for_interp)
+                except Exception as e:
+                    eth_logger.warning("Interpreter failed for %s, falling back: %s", event.get('tx_hash', '?')[:16], e)
+                    classification_data['reasoning'] = template_reasoning
             store_transaction(event, classification_data)
         except Exception as e:
             safe_print(f"  Supabase write error: {e}")
@@ -604,15 +638,50 @@ def _poll_etherscan_transfers_once():
 
                         record_transfer(symbol, token_amount, from_addr, to_addr, tx_hash)
 
+                    # Whale tx enrichment order — DO NOT REORDER:
+                    # 1. classify (sets classification, confidence, whale_score, template reasoning)
+                    # 2. lookup_labels (sets from_label, to_label from addresses table)
+                    # 3. generate_interpretation (uses labels to write audience-facing reasoning)
+                    # 4. store_transaction (writes the enriched row)
                     if enriched_transaction:
                         try:
                             from utils.supabase_writer import store_transaction
+                            from shared.address_labels import lookup_labels
                             classification_data = {
                                 'classification': classification.upper() if classification else 'TRANSFER',
                                 'confidence': confidence,
                                 'whale_score': getattr(enriched_transaction, 'final_whale_score', 0.0) if hasattr(enriched_transaction, 'final_whale_score') else (enriched_transaction.get('whale_score', 0.0) if isinstance(enriched_transaction, dict) else 0.0),
                                 'reasoning': getattr(enriched_transaction, 'master_classifier_reasoning', '') if hasattr(enriched_transaction, 'master_classifier_reasoning') else (enriched_transaction.get('reasoning', '') if isinstance(enriched_transaction, dict) else ''),
                             }
+                            # Step 2: label lookup
+                            from_label, to_label = lookup_labels(
+                                from_addr, to_addr, event.get('blockchain', 'ethereum'),
+                            )
+                            classification_data['from_label'] = from_label
+                            classification_data['to_label'] = to_label
+                            # Step 3: interpreter (audience-facing reasoning)
+                            from shared.config import (
+                                INTERPRETER_ENABLED, INTERPRETER_LABELED_USD_THRESHOLD,
+                                INTERPRETER_UNLABELED_USD_THRESHOLD,
+                            )
+                            template_reasoning = classification_data['reasoning']
+                            usd_val = float(event.get('usd_value', event.get('estimated_usd', 0)) or 0)
+                            has_labels = bool(from_label or to_label)
+                            interp_threshold = INTERPRETER_LABELED_USD_THRESHOLD if has_labels else INTERPRETER_UNLABELED_USD_THRESHOLD
+                            if INTERPRETER_ENABLED and usd_val >= interp_threshold:
+                                try:
+                                    from shared.interpreter import generate_interpretation
+                                    tx_for_interp = {
+                                        'transaction_hash': event.get('tx_hash', ''),
+                                        'token_symbol': event.get('symbol', ''),
+                                        'usd_value': usd_val,
+                                        'blockchain': event.get('blockchain', 'ethereum'),
+                                        **classification_data,
+                                    }
+                                    classification_data['reasoning'] = generate_interpretation(tx_for_interp)
+                                except Exception as e:
+                                    eth_logger.warning("Interpreter failed for %s, falling back: %s", event.get('tx_hash', '?')[:16], e)
+                                    classification_data['reasoning'] = template_reasoning
                             store_transaction(event, classification_data)
                         except Exception as e:
                             safe_print(f"  Supabase write error: {e}")

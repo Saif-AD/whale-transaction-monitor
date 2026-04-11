@@ -173,15 +173,37 @@ class TransactionDeduplicator:
             except Exception:
                 pass  # Don't let push errors break the pipeline
 
-        # Persist to Supabase (non-blocking, rate-limited thread pool)
+        # Whale tx enrichment order — DO NOT REORDER:
+        # 1. classify (already done upstream or absent for dedup-only chains)
+        # 2. lookup_labels (sets from_label, to_label from addresses table)
+        # 3. generate_interpretation — NOT wired here yet
+        #    # TODO: enable interpreter once these chains have proper classification reasoning
+        # 4. store_transaction (writes the enriched row)
         try:
             from utils.supabase_writer import store_transaction
+            from shared.address_labels import lookup_labels
             import threading
+
+            # Step 2: label lookup
+            from_label, to_label = lookup_labels(
+                event.get('from', event.get('from_address', '')),
+                event.get('to', event.get('to_address', '')),
+                event.get('blockchain', 'unknown'),
+            )
+            classification_data = {
+                'classification': event.get('classification', 'TRANSFER'),
+                'confidence': float(event.get('confidence', 0.0)),
+                'whale_score': float(event.get('whale_score', 0.0)),
+                'reasoning': event.get('reasoning', ''),
+                'from_label': from_label,
+                'to_label': to_label,
+            }
+
             # Cap concurrent Supabase writes to avoid connection floods
             if threading.active_count() < 20:
                 threading.Thread(
                     target=store_transaction,
-                    args=(event,),
+                    args=(event, classification_data),
                     daemon=True
                 ).start()
         except Exception:

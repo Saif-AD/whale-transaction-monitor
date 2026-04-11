@@ -117,7 +117,7 @@ def on_whale_message(ws, message):
                 classification = analysis_result.get('classification', 'TRANSFER')
                 confidence = analysis_result.get('confidence', 0.0)
                 whale_score = analysis_result.get('whale_score', 0)
-                reasoning = analysis_result.get('master_classifier_reasoning', 'Basic whale alert classification')
+                reasoning = analysis_result.get('reasoning', analysis_result.get('master_classifier_reasoning', 'Basic whale alert classification'))
 
             if classification in ['BUY', 'SELL', 'TRANSFER']:
                 classification = classification.lower()
@@ -201,9 +201,16 @@ def on_whale_message(ws, message):
             print(f"\nTotal USD Value: ${total_usd_value:,.2f}")
             print("="*50 + "\n")
 
-            # Persist to Supabase with classification data
+            # Whale tx enrichment order — DO NOT REORDER:
+            # 1. classify (sets classification, confidence, whale_score, template reasoning)
+            # 2. lookup_labels (sets from_label, to_label from addresses table)
+            # 3. generate_interpretation (uses labels to write audience-facing reasoning)
+            # 4. store_transaction (writes the enriched row)
             try:
                 from utils.supabase_writer import store_transaction
+                from shared.address_labels import lookup_labels
+                # Step 2: label lookup (once per tx, shared across transfers)
+                from_label, to_label = lookup_labels(tx_from, tx_to, blockchain)
                 for transfer in valid_transfers:
                     wa_event = {
                         "blockchain": blockchain,
@@ -220,7 +227,32 @@ def on_whale_message(ws, message):
                         'confidence': confidence,
                         'whale_score': whale_score,
                         'reasoning': reasoning,
+                        'from_label': from_label,
+                        'to_label': to_label,
                     }
+                    # Step 3: interpreter (audience-facing reasoning)
+                    from shared.config import (
+                        INTERPRETER_ENABLED, INTERPRETER_LABELED_USD_THRESHOLD,
+                        INTERPRETER_UNLABELED_USD_THRESHOLD,
+                    )
+                    template_reasoning = classification_data['reasoning']
+                    usd_val = float(transfer.get('usd_value', 0) or 0)
+                    has_labels = bool(from_label or to_label)
+                    interp_threshold = INTERPRETER_LABELED_USD_THRESHOLD if has_labels else INTERPRETER_UNLABELED_USD_THRESHOLD
+                    if INTERPRETER_ENABLED and usd_val >= interp_threshold:
+                        try:
+                            from shared.interpreter import generate_interpretation
+                            tx_for_interp = {
+                                'transaction_hash': tx_hash,
+                                'token_symbol': transfer.get('symbol', ''),
+                                'usd_value': usd_val,
+                                'blockchain': blockchain,
+                                **classification_data,
+                            }
+                            classification_data['reasoning'] = generate_interpretation(tx_for_interp)
+                        except Exception as e:
+                            print(f"  Interpreter failed for {tx_hash[:16]}, falling back: {e}")
+                            classification_data['reasoning'] = template_reasoning
                     store_transaction(wa_event, classification_data)
             except Exception as e:
                 print(f"  Supabase write error: {e}")

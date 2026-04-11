@@ -207,16 +207,51 @@ def on_solana_message(ws, message):
                     safe_print(f"  Amount: {abs(amount_change):,.2f} {symbol}")
                     safe_print(f"  Classification: {classification} (confidence: {confidence})")
 
-                # Persist classified transaction to Supabase
+                # Whale tx enrichment order — DO NOT REORDER:
+                # 1. classify (sets classification, confidence, whale_score, template reasoning)
+                # 2. lookup_labels (sets from_label, to_label from addresses table)
+                # 3. generate_interpretation (uses labels to write audience-facing reasoning)
+                # 4. store_transaction (writes the enriched row)
                 if confidence >= 2:
                     try:
                         from utils.supabase_writer import store_transaction
+                        from shared.address_labels import lookup_labels
                         classification_data = {
                             'classification': classification.upper(),
-                            'confidence': float(confidence) / 10.0,  # Normalize to 0-1
+                            'confidence': float(confidence) / 10.0,
                             'whale_score': 0.0,
                             'reasoning': f'Solana WS classification: {classification}',
                         }
+                        # Step 2: label lookup
+                        from_label, to_label = lookup_labels(
+                            event.get('from', ''), event.get('to', ''), 'solana',
+                        )
+                        classification_data['from_label'] = from_label
+                        classification_data['to_label'] = to_label
+                        # Step 3: interpreter (audience-facing reasoning)
+                        from shared.config import (
+                            INTERPRETER_ENABLED, INTERPRETER_LABELED_USD_THRESHOLD,
+                            INTERPRETER_UNLABELED_USD_THRESHOLD,
+                        )
+                        template_reasoning = classification_data['reasoning']
+                        usd_val = float(event.get('usd_value', 0) or 0)
+                        has_labels = bool(from_label or to_label)
+                        interp_threshold = INTERPRETER_LABELED_USD_THRESHOLD if has_labels else INTERPRETER_UNLABELED_USD_THRESHOLD
+                        if INTERPRETER_ENABLED and usd_val >= interp_threshold:
+                            try:
+                                from shared.interpreter import generate_interpretation
+                                import logging as _sol_logging
+                                tx_for_interp = {
+                                    'transaction_hash': event.get('tx_hash', ''),
+                                    'token_symbol': event.get('symbol', ''),
+                                    'usd_value': usd_val,
+                                    'blockchain': 'solana',
+                                    **classification_data,
+                                }
+                                classification_data['reasoning'] = generate_interpretation(tx_for_interp)
+                            except Exception as e:
+                                _sol_logging.getLogger(__name__).warning("Interpreter failed for %s, falling back: %s", event.get('tx_hash', '?')[:16], e)
+                                classification_data['reasoning'] = template_reasoning
                         store_transaction(event, classification_data)
                     except Exception:
                         pass
