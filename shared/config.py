@@ -10,7 +10,7 @@ import os
 # --- xAI / Grok Interpreter ---
 XAI_API_KEY: str = os.getenv("XAI_API_KEY", "")
 INTERPRETER_ENABLED: bool = os.getenv("INTERPRETER_ENABLED", "true").lower() in ("true", "1", "yes")
-INTERPRETER_TIMEOUT_SECONDS: int = int(os.getenv("INTERPRETER_TIMEOUT_SECONDS", "8"))
+INTERPRETER_TIMEOUT_SECONDS: int = int(os.getenv("INTERPRETER_TIMEOUT_SECONDS", "60"))
 INTERPRETER_MODEL: str = os.getenv("INTERPRETER_MODEL", "grok-4.20-beta-0309-reasoning")
 
 # Dual interpreter thresholds: labeled txs get interpreted at a lower
