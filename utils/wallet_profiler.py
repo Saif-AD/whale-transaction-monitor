@@ -270,7 +270,7 @@ class WalletProfiler:
 
         # Per-transaction sanity cap: skip obviously wrong values that slipped
         # past the storage cap (historical data or race conditions).
-        _MAX_TX_USD = 500_000_000  # $500M — no single whale tx exceeds this
+        _MAX_TX_USD = 500_000_000  # $500M — safety cap for obviously corrupted data
 
         for tx in txs:
             usd = float(tx.get('usd_value', 0) or 0)
