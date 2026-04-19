@@ -176,8 +176,7 @@ class TransactionDeduplicator:
         # Whale tx enrichment order — DO NOT REORDER:
         # 1. classify (already done upstream or absent for dedup-only chains)
         # 2. lookup_labels (sets from_label, to_label from addresses table)
-        # 3. generate_interpretation — NOT wired here yet
-        #    # TODO: enable interpreter once these chains have proper classification reasoning
+        # 3. generate_interpretation (uses labels to write audience-facing reasoning)
         # 4. store_transaction (writes the enriched row)
         try:
             from utils.supabase_writer import store_transaction
@@ -198,6 +197,33 @@ class TransactionDeduplicator:
                 'from_label': from_label,
                 'to_label': to_label,
             }
+
+            # Step 3: interpreter (audience-facing reasoning)
+            from shared.config import (
+                INTERPRETER_ENABLED,
+                INTERPRETER_LABELED_USD_THRESHOLD,
+                INTERPRETER_UNLABELED_USD_THRESHOLD,
+            )
+            template_reasoning = classification_data['reasoning']
+            usd_val = float(event.get('usd_value', 0) or 0)
+            has_labels = bool(from_label or to_label)
+            interp_threshold = (
+                INTERPRETER_LABELED_USD_THRESHOLD if has_labels
+                else INTERPRETER_UNLABELED_USD_THRESHOLD
+            )
+            if INTERPRETER_ENABLED and usd_val >= interp_threshold:
+                try:
+                    from shared.interpreter import generate_interpretation
+                    tx_for_interp = {
+                        'transaction_hash': event.get('tx_hash', event.get('transaction_hash', '')),
+                        'token_symbol': event.get('symbol', event.get('token_symbol', '')),
+                        'usd_value': usd_val,
+                        'blockchain': event.get('blockchain', 'unknown'),
+                        **classification_data,
+                    }
+                    classification_data['reasoning'] = generate_interpretation(tx_for_interp)
+                except Exception:
+                    classification_data['reasoning'] = template_reasoning
 
             # Cap concurrent Supabase writes to avoid connection floods
             if threading.active_count() < 20:
