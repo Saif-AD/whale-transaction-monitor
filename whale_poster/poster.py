@@ -43,7 +43,7 @@ from shared.config import (
     STABLECOIN_SYMBOLS,
 )
 from whale_poster import chart_generator
-from whale_poster.formatter import format_for_telegram, is_cex_to_cex
+from whale_poster.formatter import format_for_telegram, is_cex_to_cex, is_narrative_reasoning
 from whale_poster.dedup import is_posted, mark_posted, is_token_on_cooldown
 from whale_poster.telegram import send_message, send_photo, send_admin_alert
 
@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 PAGE_SIZE = 200
 
 UNKNOWN_ONLY_BYPASS_USD = 5_000_000
+NO_REASONING_BYPASS_USD = 10_000_000
 
 
 # ------------------------------------------------------------------
@@ -156,6 +157,8 @@ def run_once(
         "skipped_dedup": 0,
         "skipped_cex": 0,
         "unknown_only": 0,
+        "self_transfer": 0,
+        "no_reasoning": 0,
         "skipped_cooldown": 0,
         "posted": 0,
         "errors": 0,
@@ -214,6 +217,27 @@ def run_once(
                 stats["unknown_only"] += 1
                 continue
 
+        # Skip self-transfers where the same labeled entity appears on both
+        # sides (e.g. "Top WBTC holder → Top WBTC holder", "Binance Hot Wallet
+        # → Binance Hot Wallet"). Internal shuffling carries no narrative.
+        from_label_norm = from_label.strip().lower()
+        to_label_norm = to_label.strip().lower()
+        if from_label_norm and to_label_norm and from_label_norm == to_label_norm:
+            stats["self_transfer"] += 1
+            continue
+
+        # Skip posts whose reasoning is empty or a placeholder — we don't want
+        # to publish without narrative context. Very large moves (>= $10M) are
+        # news on size alone and bypass this filter.
+        if not is_narrative_reasoning(tx.get("reasoning")):
+            try:
+                usd_value = float(tx.get("usd_value") or 0)
+            except (TypeError, ValueError):
+                usd_value = 0.0
+            if usd_value < NO_REASONING_BYPASS_USD:
+                stats["no_reasoning"] += 1
+                continue
+
         if is_token_on_cooldown(sb, token, MIN_SECONDS_BETWEEN_SAME_TOKEN_POSTS):
             stats["skipped_cooldown"] += 1
             continue
@@ -251,9 +275,11 @@ def run_once(
     _write_watermark(sb, max_ts)
     logger.info(
         "Poll done: %d candidates, %d posted, %d stablecoin, %d dedup, "
-        "%d cex, %d unknown_only, %d cooldown, %d errors",
+        "%d cex, %d unknown_only, %d self_transfer, %d no_reasoning, "
+        "%d cooldown, %d errors",
         stats["candidates"], stats["posted"], stats["skipped_stablecoin"],
         stats["skipped_dedup"], stats["skipped_cex"], stats["unknown_only"],
+        stats["self_transfer"], stats["no_reasoning"],
         stats["skipped_cooldown"], stats["errors"],
     )
     return stats
