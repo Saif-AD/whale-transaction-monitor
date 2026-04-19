@@ -1,0 +1,6 @@
+[build]
+builder = "RAILPACK"
+
+[deploy]
+startCommand = "python -m whale_poster.poster --live --loop"
+restartPolicyType = "ON_FAILURE"
