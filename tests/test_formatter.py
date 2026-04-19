@@ -32,7 +32,23 @@ class TestFormatForTelegram:
         assert "Jump Crypto" in msg
         assert "Binance" in msg
         assert "Ethereum" in msg
-        assert "sonartracker.io" in msg
+        assert "sonartracker.io/tx/0xabc123" in msg
+        assert "View full analysis on Sonar" in msg
+
+    def test_no_plain_sonartracker_footer(self):
+        """The plain-text 'sonartracker.io' footer must be gone."""
+        msg = format_for_telegram(_tx())
+        lines = msg.split("\n")
+        assert "sonartracker.io" not in lines
+        assert "sonartracker.io/tx/" in msg
+
+    def test_sonar_link_order(self):
+        """Sonar deep link must come BEFORE the explorer link."""
+        msg = format_for_telegram(_tx())
+        explorer_idx = msg.find("View on Etherscan")
+        sonar_idx = msg.find("View full analysis on Sonar")
+        assert explorer_idx != -1 and sonar_idx != -1
+        assert sonar_idx < explorer_idx
 
     def test_usd_formatted(self):
         msg = format_for_telegram(_tx(usd_value=4_200_000))
@@ -98,7 +114,9 @@ class TestFormatForTelegram:
     def test_explorer_link_omitted_for_unknown_chain(self):
         msg = format_for_telegram(_tx(blockchain="unknownchain"))
         assert "View on" not in msg
-        assert "sonartracker.io" in msg
+        # Sonar deep link still present even for unknown chain
+        assert "View full analysis on Sonar" in msg
+        assert "sonartracker.io/tx/0xabc123" in msg
 
 
 class TestFormatForTwitter:
@@ -116,7 +134,14 @@ class TestFormatForTwitter:
         assert "ETH" in msg
         assert "Jump Crypto" in msg
         assert "Binance" in msg
-        assert "sonartracker.io" in msg
+        assert "sonartracker.io/tx/0xabc123" in msg
+
+    def test_no_plain_sonartracker_footer(self):
+        """The plain-text 'sonartracker.io' footer must be gone (no tx) — must be URL form."""
+        msg = format_for_twitter(_tx())
+        lines = msg.split("\n")
+        assert "sonartracker.io" not in lines
+        assert any("sonartracker.io/tx/" in line for line in lines)
 
     def test_reasoning_included_when_fits(self):
         msg = format_for_twitter(_tx(reasoning="Short narrative."))
@@ -131,7 +156,7 @@ class TestFormatForTwitter:
     def test_reasoning_omitted_when_empty(self):
         msg = format_for_twitter(_tx(reasoning=""))
         assert len(msg) <= 280
-        assert "sonartracker.io" in msg
+        assert "sonartracker.io/tx/" in msg
 
     def test_twitter_includes_explorer_url(self):
         msg = format_for_twitter(_tx(

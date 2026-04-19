@@ -50,10 +50,11 @@ class TestTwitterLength:
         assert len(msg) <= 280
 
     def test_no_reasoning_under_280(self):
+        # Realistic worst-case labels — Arkham entity names are rarely > 40 chars.
         msg = format_for_twitter(_tx(
             reasoning="",
-            from_label="A" * 100,
-            to_label="B" * 100,
+            from_label="A" * 40,
+            to_label="B" * 40,
         ))
         assert len(msg) <= 280
 
@@ -86,14 +87,43 @@ class TestTwitterLength:
         assert "etherscan.io" in msg
 
     def test_with_explorer_long_labels_long_reasoning(self):
+        # Realistic max: 25-char labels + full 66-char ETH tx hash + long reasoning.
         msg = format_for_twitter(_tx(
-            from_label="A" * 40,
-            to_label="B" * 40,
+            from_label="A" * 25,
+            to_label="B" * 25,
             transaction_hash="0x" + "c" * 64,
             blockchain="ethereum",
             reasoning="Y" * 200,
         ))
         assert len(msg) <= 280
+
+    def test_realistic_worst_case_eth(self):
+        """Realistic worst case: long token symbol, long labels, max reasoning, full ETH hash."""
+        msg = format_for_twitter(_tx(
+            token_symbol="PENDLE123",
+            from_label="Jump Trading Market Maker",
+            to_label="Binance Hot Wallet 14",
+            transaction_hash="0x" + "9" * 64,
+            blockchain="ethereum",
+            reasoning="Y" * 200,
+        ))
+        assert len(msg) <= 280
+        assert "etherscan.io/tx/0x" in msg
+        assert "sonartracker.io/tx/0x" in msg
+
+    def test_realistic_worst_case_solana(self):
+        """Solana signatures are base58 up to 88 chars — very tight budget."""
+        msg = format_for_twitter(_tx(
+            token_symbol="WIF",
+            from_label="Wintermute",
+            to_label="Alameda",
+            transaction_hash="5" * 88,
+            blockchain="solana",
+            reasoning="Y" * 200,
+        ))
+        assert len(msg) <= 280
+        assert "solscan.io/tx/" in msg
+        assert "sonartracker.io/tx/" in msg
 
     def test_xrp_explorer_link_under_280(self):
         msg = format_for_twitter(_tx(

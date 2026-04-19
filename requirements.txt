@@ -74,6 +74,10 @@ pandas==2.2.3
 numpy==1.26.4
 GitPython==3.1.40
 
+# Charting (whale alert candlestick posts)
+matplotlib>=3.8.0
+mplfinance>=0.12.10b0
+
 # Blockchain and crypto
 web3==7.13.0
 eth-abi==5.2.0

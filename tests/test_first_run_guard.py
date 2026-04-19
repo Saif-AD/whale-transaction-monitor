@@ -113,6 +113,10 @@ class TestDryRunDoesNotWrite:
         assert stats["posted"] == 1
         mock_mark.assert_not_called()
 
+    @patch(
+        "whale_poster.poster.chart_generator.generate_whale_chart",
+        return_value=None,
+    )
     @patch("whale_poster.poster.mark_posted")
     @patch("whale_poster.poster.send_message", return_value=True)
     @patch("whale_poster.poster.is_token_on_cooldown", return_value=False)
@@ -127,7 +131,7 @@ class TestDryRunDoesNotWrite:
     def test_live_run_calls_mark_posted(
         self,
         mock_create, mock_fetch, mock_read, mock_write,
-        mock_is_posted, mock_cooldown, mock_send, mock_mark,
+        mock_is_posted, mock_cooldown, mock_send, mock_mark, mock_chart,
     ):
         mock_fetch.return_value = [self._candidate_row()]
         mock_sb = MagicMock()
@@ -136,6 +140,10 @@ class TestDryRunDoesNotWrite:
         mock_mark.assert_called_once()
         mock_send.assert_called_once()
 
+    @patch(
+        "whale_poster.poster.chart_generator.generate_whale_chart",
+        return_value=None,
+    )
     @patch("whale_poster.poster.mark_posted")
     @patch("whale_poster.poster.send_message", return_value=False)
     @patch("whale_poster.poster.is_token_on_cooldown", return_value=False)
@@ -150,7 +158,7 @@ class TestDryRunDoesNotWrite:
     def test_live_failed_send_does_not_mark_posted(
         self,
         mock_create, mock_fetch, mock_read, mock_write,
-        mock_is_posted, mock_cooldown, mock_send, mock_mark,
+        mock_is_posted, mock_cooldown, mock_send, mock_mark, mock_chart,
     ):
         """If Telegram send fails in live mode, mark_posted must NOT be called."""
         mock_fetch.return_value = [self._candidate_row()]
@@ -159,3 +167,36 @@ class TestDryRunDoesNotWrite:
         assert stats["errors"] == 1
         assert stats["posted"] == 0
         mock_mark.assert_not_called()
+
+    @patch("whale_poster.poster.os.remove")
+    @patch(
+        "whale_poster.poster.chart_generator.generate_whale_chart",
+        return_value="/tmp/fake_sonar_chart.png",
+    )
+    @patch("whale_poster.poster.send_photo", return_value=True)
+    @patch("whale_poster.poster.send_message", return_value=True)
+    @patch("whale_poster.poster.mark_posted")
+    @patch("whale_poster.poster.is_token_on_cooldown", return_value=False)
+    @patch("whale_poster.poster.is_posted", return_value=False)
+    @patch("whale_poster.poster._write_watermark")
+    @patch(
+        "whale_poster.poster._read_watermark",
+        return_value="2026-04-01T00:00:00+00:00",
+    )
+    @patch("whale_poster.poster._fetch_candidates")
+    @patch("whale_poster.poster.create_client")
+    def test_live_run_with_chart_uses_send_photo(
+        self,
+        mock_create, mock_fetch, mock_read, mock_write,
+        mock_is_posted, mock_cooldown, mock_mark,
+        mock_send_message, mock_send_photo, mock_chart, mock_remove,
+    ):
+        """When chart rendering succeeds, poster must call send_photo (not send_message)."""
+        mock_fetch.return_value = [self._candidate_row()]
+        mock_sb = MagicMock()
+        stats = run_once(live=True, client=mock_sb)
+        assert stats["posted"] == 1
+        mock_send_photo.assert_called_once()
+        mock_send_message.assert_not_called()
+        mock_remove.assert_called_once_with("/tmp/fake_sonar_chart.png")
+        mock_mark.assert_called_once()

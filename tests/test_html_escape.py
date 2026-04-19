@@ -48,3 +48,30 @@ class TestHtmlEscape:
         msg = format_for_telegram(_tx(from_label="Binance", to_label="Coinbase"))
         assert "Binance" in msg
         assert "Coinbase" in msg
+
+    def test_sonar_href_not_broken_by_reasoning_html(self):
+        """Reasoning containing <, >, & must not break the Sonar <a href> tag."""
+        tx = _tx(
+            blockchain="ethereum",
+            transaction_hash="0xdeadbeef",
+            reasoning="Buy <ETH> & hold for >1yr period.",
+            from_label="Jump Crypto",
+            to_label="Binance",
+        )
+        msg = format_for_telegram(tx)
+        assert '<a href="https://www.sonartracker.io/tx/0xdeadbeef">' in msg
+        assert "View full analysis on Sonar</a>" in msg
+        assert "&lt;ETH&gt;" in msg
+        assert "&amp;" in msg
+
+    def test_explorer_href_not_broken_by_reasoning_html(self):
+        """Reasoning with HTML chars must not break the explorer <a href> tag."""
+        tx = _tx(
+            blockchain="ethereum",
+            transaction_hash="0xabc",
+            reasoning="<SCRIPT>payload</SCRIPT>",
+            from_label="Jump",
+            to_label="Binance",
+        )
+        msg = format_for_telegram(tx)
+        assert '<a href="https://etherscan.io/tx/0xabc">View on Etherscan</a>' in msg

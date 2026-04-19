@@ -10,6 +10,12 @@ No Grok call, no label lookup.
 from __future__ import annotations
 
 import html
+import logging
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 _PLACEHOLDER_PREFIXES = (
     "Stage ",
@@ -49,6 +55,15 @@ EXPLORER_URLS = {
     "xrp":      ("https://livenet.xrpl.org/transactions/{tx_hash}", "XRPL Explorer"),
 }
 
+SONAR_TX_URL_TEMPLATE = "https://www.sonartracker.io/tx/{tx_hash}"
+
+
+def _sonar_tx_url(tx_hash: str) -> str:
+    """Return the Sonar deep link for a transaction hash, or '' if missing."""
+    if not tx_hash:
+        return ""
+    return SONAR_TX_URL_TEMPLATE.format(tx_hash=tx_hash)
+
 
 def _chain_display(blockchain: str) -> str:
     key = (blockchain or "").lower()
@@ -77,13 +92,120 @@ def is_narrative_reasoning(reasoning: str | None) -> bool:
     return True
 
 
-def _label_or_short_address(label: str, address: str) -> str:
-    """Return label if present, otherwise a shortened address."""
-    if label and label.strip():
-        return label.strip()
+def _short_address(address: str) -> str:
+    """Return a shortened form of the address for display."""
     if address and len(address) > 12:
         return f"{address[:6]}...{address[-4:]}"
     return address or "unknown"
+
+
+# ------------------------------------------------------------------
+# Unknown-wallet enrichment (Active Whale / New Wallet / Unlabeled Whale)
+# ------------------------------------------------------------------
+
+# Cache: {(address, blockchain): (inserted_monotonic_ts, label_text)}
+_ENRICH_CACHE: dict[tuple[str, str], tuple[float, str]] = {}
+_ENRICH_CACHE_TTL_SECONDS = 300  # 5 minutes
+_ENRICH_CACHE_MAX_SIZE = 500
+_ENRICH_HISTORY_DAYS = 7
+_ENRICH_ACTIVE_MIN_COUNT = 4  # strictly > 3 prior txs
+
+# "Unlabeled Whale" is the conservative fallback whenever the DB is
+# unreachable or the query fails — we still return the short address so
+# operators can manually verify on-chain.
+_ENRICH_FALLBACK = "Unlabeled Whale"
+
+
+def _enrich_cache_clear() -> None:
+    """Clear the enrichment cache. Primarily for tests."""
+    _ENRICH_CACHE.clear()
+
+
+def _enrich_unknown_label(
+    address: str,
+    blockchain: str,
+    client: Optional[Any] = None,
+) -> str:
+    """Return a contextual placeholder for an unlabeled whale wallet.
+
+    Returns one of:
+      - "Active Whale (0x1234...abcd)"   (>3 prior txs in last 7 days on chain)
+      - "New Wallet (0x1234...abcd)"     (no prior history on chain)
+      - "Unlabeled Whale (0x1234...abcd)" (1-3 prior txs, or DB error fallback)
+
+    Results are cached in-process for 5 minutes (max 500 entries) so repeated
+    lookups for the same address within a polling cycle hit Supabase once.
+    """
+    short = _short_address(address)
+    if not address:
+        return short
+
+    chain_key = (blockchain or "").lower()
+    cache_key = (address, chain_key)
+    now = time.monotonic()
+
+    cached = _ENRICH_CACHE.get(cache_key)
+    if cached is not None:
+        inserted, cached_label = cached
+        if now - inserted < _ENRICH_CACHE_TTL_SECONDS:
+            return f"{cached_label} ({short})"
+        _ENRICH_CACHE.pop(cache_key, None)
+
+    if client is None:
+        return f"{_ENRICH_FALLBACK} ({short})"
+
+    try:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=_ENRICH_HISTORY_DAYS)
+        ).isoformat()
+        result = (
+            client.table("all_whale_transactions")
+            .select("transaction_hash")
+            .or_(f"from_address.eq.{address},to_address.eq.{address}")
+            .eq("blockchain", blockchain)
+            .gte("timestamp", cutoff)
+            .limit(_ENRICH_ACTIVE_MIN_COUNT + 1)
+            .execute()
+        )
+        rows = getattr(result, "data", None) or []
+        count = len(rows)
+    except Exception as e:
+        logger.debug("Enrichment query failed for %s on %s: %s", short, chain_key, e)
+        return f"{_ENRICH_FALLBACK} ({short})"
+
+    if count >= _ENRICH_ACTIVE_MIN_COUNT:
+        label = "Active Whale"
+    elif count == 0:
+        label = "New Wallet"
+    else:
+        label = "Unlabeled Whale"
+
+    if len(_ENRICH_CACHE) >= _ENRICH_CACHE_MAX_SIZE:
+        # Evict oldest entry (simple FIFO-by-insertion-time eviction).
+        oldest_key = min(_ENRICH_CACHE, key=lambda k: _ENRICH_CACHE[k][0])
+        _ENRICH_CACHE.pop(oldest_key, None)
+    _ENRICH_CACHE[cache_key] = (now, label)
+
+    return f"{label} ({short})"
+
+
+def _label_or_short_address(
+    label: str,
+    address: str,
+    blockchain: Optional[str] = None,
+    client: Optional[Any] = None,
+) -> str:
+    """Return label if present, otherwise an enriched placeholder with the
+    shortened address. When ``client`` is None, enrichment is skipped and
+    only the shortened address is returned (preserves legacy behavior for
+    callers that don't have a Supabase handle)."""
+    if label and label.strip():
+        return label.strip()
+    if not address:
+        return "unknown"
+    if client is not None and blockchain:
+        return _enrich_unknown_label(address, blockchain, client=client)
+    return _short_address(address)
 
 
 def _format_usd(value: float) -> str:
@@ -121,10 +243,12 @@ def is_cex_to_cex(from_label: str, to_label: str) -> bool:
     return _is_cex_label(from_label) and _is_cex_label(to_label)
 
 
-def format_for_telegram(tx: dict) -> str:
+def format_for_telegram(tx: dict, client: Optional[Any] = None) -> str:
     """Format a whale transaction for Telegram (HTML mode).
 
-    Reads from_label, to_label, reasoning directly from the row.
+    Reads from_label, to_label, reasoning directly from the row. When a
+    Supabase ``client`` is provided, empty labels are replaced with a
+    contextual placeholder (Active Whale / New Wallet / Unlabeled Whale).
     """
     symbol = html.escape(tx.get("token_symbol", "???"))
     usd_value = float(tx.get("usd_value", 0))
@@ -137,8 +261,12 @@ def format_for_telegram(tx: dict) -> str:
     from_addr = tx.get("from_address", "")
     to_addr = tx.get("to_address", "")
 
-    from_display = html.escape(_label_or_short_address(from_label, from_addr))
-    to_display = html.escape(_label_or_short_address(to_label, to_addr))
+    from_display = html.escape(
+        _label_or_short_address(from_label, from_addr, blockchain_raw, client)
+    )
+    to_display = html.escape(
+        _label_or_short_address(to_label, to_addr, blockchain_raw, client)
+    )
 
     lines = [
         f"\U0001F40B <b>{symbol}</b> (~{usd_str})",
@@ -152,22 +280,31 @@ def format_for_telegram(tx: dict) -> str:
         lines.append("")
         lines.append(f"\u2728 {html.escape(reasoning)}")
 
-    link = _explorer_link(blockchain_raw, tx.get("transaction_hash", ""))
-    lines.append("")
+    tx_hash = tx.get("transaction_hash", "")
+    link = _explorer_link(blockchain_raw, tx_hash)
+    sonar_url = _sonar_tx_url(tx_hash)
+
+    if link or sonar_url:
+        lines.append("")
+    if sonar_url:
+        lines.append(
+            f'<a href="{html.escape(sonar_url)}">View full analysis on Sonar</a>'
+        )
     if link:
         url, explorer_name = link
         lines.append(
             f'<a href="{html.escape(url)}">View on {html.escape(explorer_name)}</a>'
         )
-    lines.append("sonartracker.io")
 
     return "\n".join(lines)
 
 
-def format_for_twitter(tx: dict) -> str:
+def format_for_twitter(tx: dict, client: Optional[Any] = None) -> str:
     """Format a whale transaction for Twitter/X (plain text, max 280 chars).
 
-    Omits reasoning if it would push the message past 280 chars.
+    Omits reasoning if it would push the message past 280 chars. When a
+    Supabase ``client`` is provided, empty labels are replaced with a
+    contextual placeholder (Active Whale / New Wallet / Unlabeled Whale).
     """
     symbol = tx.get("token_symbol", "???")
     usd_value = float(tx.get("usd_value", 0))
@@ -180,8 +317,8 @@ def format_for_twitter(tx: dict) -> str:
     from_addr = tx.get("from_address", "")
     to_addr = tx.get("to_address", "")
 
-    from_display = _label_or_short_address(from_label, from_addr)
-    to_display = _label_or_short_address(to_label, to_addr)
+    from_display = _label_or_short_address(from_label, from_addr, blockchain_raw, client)
+    to_display = _label_or_short_address(to_label, to_addr, blockchain_raw, client)
 
     core_lines = [
         f"\U0001F40B {usd_str} {symbol}",
@@ -191,24 +328,32 @@ def format_for_twitter(tx: dict) -> str:
 
     core = "\n".join(core_lines)
 
-    link = _explorer_link(blockchain_raw, tx.get("transaction_hash", ""))
+    tx_hash = tx.get("transaction_hash", "")
+    link = _explorer_link(blockchain_raw, tx_hash)
     explorer_url = link[0] if link else ""
+    sonar_url = _sonar_tx_url(tx_hash)
 
     footer_parts = []
+    if sonar_url:
+        footer_parts.append(sonar_url)
     if explorer_url:
         footer_parts.append(explorer_url)
-    footer_parts.append("sonartracker.io")
     footer = "\n".join(footer_parts)
+
+    sep = "\n\n" if footer else ""
 
     reasoning = tx.get("reasoning", "")
     if is_narrative_reasoning(reasoning):
-        with_reasoning = f"{core}\n\n{reasoning}\n\n{footer}"
+        with_reasoning = f"{core}\n\n{reasoning}{sep}{footer}"
         if len(with_reasoning) <= 280:
             return with_reasoning
 
-        available = 280 - len(core) - len(footer) - 4  # 4 = two \n\n pairs
+        # Leave a sensible budget for reasoning — reserve core, footer, and
+        # two \n\n separators (4 chars). Drop reasoning entirely if < 20
+        # chars would remain for it.
+        available = 280 - len(core) - len(footer) - 4
         if available >= 20:
             truncated = reasoning[: available - 1] + "\u2026"
-            return f"{core}\n\n{truncated}\n\n{footer}"
+            return f"{core}\n\n{truncated}{sep}{footer}"
 
-    return f"{core}\n\n{footer}"
+    return f"{core}{sep}{footer}"

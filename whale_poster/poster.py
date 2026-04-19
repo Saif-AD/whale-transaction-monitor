@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 import traceback
@@ -41,9 +42,10 @@ from shared.config import (
     POSTER_MIN_TX_TIMESTAMP,
     STABLECOIN_SYMBOLS,
 )
+from whale_poster import chart_generator
 from whale_poster.formatter import format_for_telegram, is_cex_to_cex
 from whale_poster.dedup import is_posted, mark_posted, is_token_on_cooldown
-from whale_poster.telegram import send_message, send_admin_alert
+from whale_poster.telegram import send_message, send_photo, send_admin_alert
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,6 +54,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 200
+
+UNKNOWN_ONLY_BYPASS_USD = 5_000_000
 
 
 # ------------------------------------------------------------------
@@ -151,6 +155,7 @@ def run_once(
         "skipped_stablecoin": 0,
         "skipped_dedup": 0,
         "skipped_cex": 0,
+        "unknown_only": 0,
         "skipped_cooldown": 0,
         "posted": 0,
         "errors": 0,
@@ -191,20 +196,49 @@ def run_once(
             stats["skipped_dedup"] += 1
             continue
 
-        from_label = tx.get("from_label", "")
-        to_label = tx.get("to_label", "")
+        from_label = tx.get("from_label", "") or ""
+        to_label = tx.get("to_label", "") or ""
         if not POST_CEX_INTERNAL and is_cex_to_cex(from_label, to_label):
             stats["skipped_cex"] += 1
             continue
+
+        # Skip transactions where both parties are unknown (no label on either
+        # side), since there's no narrative context to post. Bypass for very
+        # large moves that are notable on size alone.
+        if not from_label.strip() and not to_label.strip():
+            try:
+                usd_value = float(tx.get("usd_value") or 0)
+            except (TypeError, ValueError):
+                usd_value = 0.0
+            if usd_value < UNKNOWN_ONLY_BYPASS_USD:
+                stats["unknown_only"] += 1
+                continue
 
         if is_token_on_cooldown(sb, token, MIN_SECONDS_BETWEEN_SAME_TOKEN_POSTS):
             stats["skipped_cooldown"] += 1
             continue
 
-        msg = format_for_telegram(tx)
+        msg = format_for_telegram(tx, client=sb)
 
         if live:
-            ok = send_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, msg)
+            chart_path = None
+            try:
+                chart_path = chart_generator.generate_whale_chart(tx)
+            except Exception as e:
+                logger.warning("Chart generation failed: %s", e)
+
+            if chart_path:
+                ok = send_photo(
+                    chart_path, msg,
+                    chat_id=TELEGRAM_CHANNEL_ID, token=TELEGRAM_BOT_TOKEN,
+                )
+                try:
+                    os.remove(chart_path)
+                except OSError:
+                    pass
+            else:
+                ok = send_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, msg)
+
             if not ok:
                 stats["errors"] += 1
                 continue
@@ -217,9 +251,9 @@ def run_once(
     _write_watermark(sb, max_ts)
     logger.info(
         "Poll done: %d candidates, %d posted, %d stablecoin, %d dedup, "
-        "%d cex, %d cooldown, %d errors",
+        "%d cex, %d unknown_only, %d cooldown, %d errors",
         stats["candidates"], stats["posted"], stats["skipped_stablecoin"],
-        stats["skipped_dedup"], stats["skipped_cex"],
+        stats["skipped_dedup"], stats["skipped_cex"], stats["unknown_only"],
         stats["skipped_cooldown"], stats["errors"],
     )
     return stats
