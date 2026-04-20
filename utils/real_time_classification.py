@@ -13,7 +13,7 @@ import json
 import logging
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import asyncio
 import aiohttp
@@ -84,6 +84,9 @@ class ClassifiedSwap:
     raw_log_data: Optional[Dict] = None
     classification_method: str = 'stablecoin_heuristic'
 
+_PRICE_CACHE_TTL_SECONDS = 300  # 5 minutes, matches the Fix 3B spec
+
+
 class RealTimeClassifier:
     """Enhanced real-time transaction classifier with multi-source validation."""
     
@@ -96,6 +99,11 @@ class RealTimeClassifier:
         self.token_cache = {}
         self.price_cache = {}
         self.cache_ttl = settings.CLASSIFICATION_CONFIG['price_cache_ttl_seconds']
+
+        # Lazy Supabase client for the L2 (cross-process) price cache. Built
+        # on first use; set to ``False`` if init fails so we don't keep
+        # retrying. Falls back cleanly to direct CoinGecko calls when unavailable.
+        self._supabase_client: Any = None
         
         # Stablecoin addresses (normalized to lowercase)
         self.stablecoins = {
@@ -164,17 +172,111 @@ class RealTimeClassifier:
             # Do not fabricate values; propagate so caller can record missing_fields
             raise
     
+    def _ensure_supabase(self):
+        """Return the lazy Supabase client, or None if unavailable.
+
+        Failure to initialise (missing env, import error) permanently
+        disables the L2 cache for this process — the caller falls through
+        to a direct CoinGecko call, which is exactly the pre-cache behaviour.
+        """
+        if self._supabase_client is False:
+            return None
+        if self._supabase_client is not None:
+            return self._supabase_client
+        try:
+            from supabase import create_client
+            sb_url = getattr(api_keys, 'SUPABASE_URL', None)
+            sb_key = getattr(api_keys, 'SUPABASE_SERVICE_ROLE_KEY', None)
+            if not sb_url or not sb_key:
+                raise RuntimeError("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set")
+            self._supabase_client = create_client(sb_url, sb_key)
+            return self._supabase_client
+        except Exception as e:
+            logger.warning("Supabase unavailable for price cache: %s", e)
+            self._supabase_client = False
+            return None
+
+    async def _read_price_cache(self, token_address: str, chain: str) -> Optional[Decimal]:
+        """Return cached price if fresher than TTL, else None. Best-effort."""
+        def _q():
+            try:
+                sb = self._ensure_supabase()
+                if not sb:
+                    return None
+                cutoff_iso = (
+                    datetime.now(timezone.utc)
+                    - timedelta(seconds=_PRICE_CACHE_TTL_SECONDS)
+                ).isoformat()
+                resp = (
+                    sb.table("coingecko_token_price_cache")
+                    .select("price_usd")
+                    .eq("token_address", token_address.lower())
+                    .eq("chain", chain)
+                    .gte("fetched_at", cutoff_iso)
+                    .limit(1)
+                    .execute()
+                )
+                rows = resp.data or []
+                if rows:
+                    return Decimal(str(rows[0]["price_usd"]))
+            except Exception as e:
+                logger.warning("price cache read failed for %s/%s: %s",
+                               chain, token_address, e)
+            return None
+        return await asyncio.to_thread(_q)
+
+    async def _write_price_cache(self, token_address: str, chain: str,
+                                 price: Decimal) -> None:
+        """Upsert the latest price into the cache table. Best-effort."""
+        def _q():
+            try:
+                sb = self._ensure_supabase()
+                if not sb:
+                    return
+                sb.table("coingecko_token_price_cache").upsert(
+                    {
+                        "token_address": token_address.lower(),
+                        "chain": chain,
+                        "price_usd": str(price),
+                        "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                    on_conflict="token_address,chain",
+                ).execute()
+            except Exception as e:
+                logger.warning("price cache write failed for %s/%s: %s",
+                               chain, token_address, e)
+        await asyncio.to_thread(_q)
+
     async def get_token_price_coingecko(self, token_address: str, chain: str) -> Optional[Decimal]:
-        """Get token price from CoinGecko API with caching and rate limiting."""
+        """Get token price from CoinGecko, tiered through two caches.
+
+        Cache tiers:
+          L1 — ``self.price_cache`` (per-process dict, TTL from settings)
+          L2 — ``coingecko_token_price_cache`` Supabase table, 5 min TTL
+               (survives process restarts, shared across workers)
+          L3 — live CoinGecko call
+
+        On an L3 hit, both L1 and L2 are populated. Any Supabase failure
+        is logged and falls through, never breaking classification.
+        """
         cache_key = f"price:{chain}:{token_address.lower()}"
         current_time = time.time()
-        
-        # Check cache
+
+        # L1: in-process cache
         if cache_key in self.price_cache:
             price_data = self.price_cache[cache_key]
             if current_time - price_data['timestamp'] < self.cache_ttl:
                 return price_data['price']
-        
+
+        # L2: Supabase cache (cross-process, survives restarts)
+        cached = await self._read_price_cache(token_address, chain)
+        if cached is not None:
+            self.price_cache[cache_key] = {
+                'price': cached,
+                'timestamp': current_time,
+            }
+            return cached
+
         try:
             # Map chain names to CoinGecko platform IDs
             platform_map = {
@@ -209,6 +311,9 @@ class RealTimeClassifier:
                                 'price': price_decimal,
                                 'timestamp': current_time
                             }
+                            await self._write_price_cache(
+                                token_address, chain, price_decimal,
+                            )
                             return price_decimal
                     elif response.status == 429:
                         logger.warning("CoinGecko rate limit hit, using cached price if available")
