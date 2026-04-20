@@ -22,7 +22,8 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
-from typing import List, Optional, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import Any, List, Optional, Tuple
 
 import httpx
 
@@ -33,6 +34,82 @@ RESAMPLE_RULE = "30min"
 
 _COINGECKO_OHLC_URL = "https://api.coingecko.com/api/v3/coins/{id}/ohlc"
 _FETCH_TIMEOUT = 5.0
+
+# OHLC payloads are 24h bars; re-fetching more often than once an hour is pure
+# waste. 1h TTL matches the poster's per-token cooldown so a token that can
+# only be re-posted every hour reads exactly one OHLC call from upstream.
+_OHLC_TTL_SECONDS = 3600
+
+# Module-level Supabase client. Built lazily on first use so importing this
+# module in a test context without SUPABASE_URL set doesn't blow up; set to
+# ``False`` after a failed init so we stop retrying.
+_supabase_client: Any = None
+
+
+def _get_supabase():
+    """Return a cached Supabase client, or ``None`` if unavailable.
+
+    Any failure (missing env, import error) permanently disables the cache
+    for the life of the process; chart generation then falls back to direct
+    CoinGecko calls — same behaviour as before this cache existed.
+    """
+    global _supabase_client
+    if _supabase_client is False:
+        return None
+    if _supabase_client is not None:
+        return _supabase_client
+    try:
+        from supabase import create_client
+        from config.api_keys import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+        _supabase_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        return _supabase_client
+    except Exception as e:
+        logger.warning("Supabase unavailable for OHLC cache: %s", e)
+        _supabase_client = False
+        return None
+
+
+def _read_ohlc_cache(coingecko_id: str) -> Optional[List[List[float]]]:
+    """Return cached OHLC for ``coingecko_id`` if fresher than TTL, else None."""
+    sb = _get_supabase()
+    if not sb:
+        return None
+    try:
+        cutoff_iso = (
+            datetime.now(timezone.utc) - timedelta(seconds=_OHLC_TTL_SECONDS)
+        ).isoformat()
+        resp = (
+            sb.table("coingecko_ohlc_cache")
+            .select("ohlc_data")
+            .eq("coingecko_id", coingecko_id)
+            .gte("fetched_at", cutoff_iso)
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data or []
+        if rows:
+            return rows[0]["ohlc_data"]
+    except Exception as e:
+        logger.warning("OHLC cache read failed for %s: %s", coingecko_id, e)
+    return None
+
+
+def _write_ohlc_cache(coingecko_id: str, data: list) -> None:
+    """Upsert the latest OHLC payload for ``coingecko_id``. Best-effort."""
+    sb = _get_supabase()
+    if not sb:
+        return
+    try:
+        sb.table("coingecko_ohlc_cache").upsert(
+            {
+                "coingecko_id": coingecko_id,
+                "ohlc_data": data,
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+            },
+            on_conflict="coingecko_id",
+        ).execute()
+    except Exception as e:
+        logger.warning("OHLC cache write failed for %s: %s", coingecko_id, e)
 
 # ---------------------------------------------------------------------------
 # Sonar brand palette
@@ -153,7 +230,15 @@ def _preferred_font_family() -> str:
 
 
 def _fetch_ohlc(coingecko_id: str) -> Optional[List[List[float]]]:
-    """Fetch 24h OHLC bars from CoinGecko. Returns None on any error."""
+    """Fetch 24h OHLC bars, hitting the Supabase cache first.
+
+    Returns None on any error. The cache is best-effort: a read or write
+    failure logs a warning and falls through to a direct CoinGecko call.
+    """
+    cached = _read_ohlc_cache(coingecko_id)
+    if cached:
+        return cached
+
     url = _COINGECKO_OHLC_URL.format(id=coingecko_id)
     try:
         resp = httpx.get(
@@ -182,6 +267,8 @@ def _fetch_ohlc(coingecko_id: str) -> Optional[List[List[float]]]:
 
     if not isinstance(data, list) or not data:
         return None
+
+    _write_ohlc_cache(coingecko_id, data)
     return data
 
 
