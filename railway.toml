@@ -1,21 +1,8 @@
 [build]
-builder = "NIXPACKS"
-
-[build.nixpacksPlan.phases.setup]
-nixPkgs = ["python311"]
-
-# Nixpacks v1.41+ splits chained `&&` cmds into separate RUN steps, which
-# breaks venv activation between commands. Use the venv's binaries via
-# absolute path instead so each step works in isolation.
-[build.nixpacksPlan.phases.install]
-cmds = [
-    "python -m venv /app/.venv",
-    "/app/.venv/bin/pip install --upgrade pip",
-    "/app/.venv/bin/pip install -r requirements.txt",
-]
+builder = "RAILPACK"
 
 [deploy]
-startCommand = "/app/.venv/bin/python app.py"
+startCommand = "python app.py"
 healthcheckPath = "/"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"

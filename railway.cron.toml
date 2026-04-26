@@ -1,55 +1,30 @@
 # Railway service definition for the wallet-profile refresh cron.
 #
-# Railway exposes cron functionality via `[deploy].cronSchedule`. A
-# service with cronSchedule set runs the startCommand on the schedule
-# rather than as a long-running process, so this file is intended for
-# *its own service* — not the one running app.py or whale_poster.poster.
+# Railway exposes cron functionality via `[deploy].cronSchedule`. A service
+# with cronSchedule set runs the startCommand on the schedule rather than
+# as a long-running process, so this file is intended for *its own service*
+# — not the one running app.py or whale_poster.poster.
 #
 # Provisioning checklist (one-time, in the Railway dashboard):
 #   1. Create a new service in the project, point it at this repo.
 #   2. Under Settings → Source, set Config Path to railway.cron.toml.
 #   3. Make sure the same env vars (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
 #      ZERION_API_KEY, etc.) are present on this service.
-#   4. Deploy. The first run will be on the schedule; trigger one
-#      manually from the dashboard if you need an immediate refresh.
+#   4. Deploy. The first run will be on the schedule; trigger one manually
+#      from the dashboard if you need an immediate refresh.
 #
 # Schedule: every 30 minutes. The script enforces its own 25-min runtime
 # cap so a slow run never overlaps with the next slot.
 
 [build]
-builder = "NIXPACKS"
-
-[build.nixpacksPlan.phases.setup]
-nixPkgs = ["python311"]
-
-# Nixpacks v1.41+ splits chained `&&` cmds into separate RUN steps; use
-# absolute paths to the venv so each step works in isolation.
-[build.nixpacksPlan.phases.install]
-cmds = [
-    "python -m venv /app/.venv",
-    "/app/.venv/bin/pip install --upgrade pip",
-    "/app/.venv/bin/pip install -r requirements.txt",
-]
+builder = "RAILPACK"
 
 [deploy]
-startCommand = "/app/.venv/bin/python scripts/refresh_wallet_profiles_cron.py --live"
+startCommand = "python scripts/refresh_wallet_profiles_cron.py --live"
 cronSchedule = "*/30 * * * *"
 restartPolicyType = "NEVER"
 
 # -----------------------------------------------------------------------
 # A second Railway service is required for the daily Solscan label
-# scraper. Until Railway supports multiple cron entries per config, the
-# cleanest pattern is to create another service in the same project
-# pointed at this same repo, with Config Path set to railway.solscan.toml
-# (a copy of this file with the startCommand and cronSchedule below):
-#
-#   [deploy]
-#   startCommand = ". /app/.venv/bin/activate && python scripts/scrape_solscan_labels.py --live"
-#   cronSchedule = "0 4 * * *"          # 04:00 UTC daily
-#   restartPolicyType = "NEVER"
-#
-# Provisioning notes:
-#   - Same env vars required.
-#   - SOLSCAN_API_KEY must be set or the scraper exits 0 immediately
-#     without writing.
+# scraper. Provisioning notes are in railway.solscan.toml.
 # -----------------------------------------------------------------------
