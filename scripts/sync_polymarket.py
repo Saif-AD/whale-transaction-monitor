@@ -192,6 +192,10 @@ def run(
     *, live: bool, event_pages: int, events_per_page: int, max_markets: int,
     holders_markets: int, holders_per_market: int, enrich_whales: int = 0, client=None,
 ) -> Dict[str, int]:
+    # Captured BEFORE the pull so every row we're about to upsert gets a
+    # newer updated_at; anything older than this is stale (resolved markets,
+    # dropped longshots) and gets pruned after the write.
+    prune_cutoff = _now()
     payload = build_payload(
         event_pages=event_pages,
         events_per_page=events_per_page,
@@ -236,6 +240,21 @@ def run(
         client.table("polymarket_market_holders").upsert(
             payload["holders"], on_conflict="condition_id,proxy_wallet,outcome_index"
         ).execute()
+
+    # Prune stale rows the upserts left behind. Upsert never deletes, so
+    # resolved markets, dropped longshots, and whales that fell out of the
+    # top markets would accumulate forever and show as "—"/spam in the app.
+    # Guard: only prune after a healthy pull so a thin/failed run can't wipe
+    # the tables.
+    if len(payload["markets"]) >= 50:
+        for table in ("polymarket_market_holders", "polymarket_whales", "polymarket_markets"):
+            try:
+                client.table(table).delete().lt("updated_at", prune_cutoff).execute()
+            except Exception as e:
+                logger.warning("prune of %s failed: %s", table, e)
+        logger.info("Pruned rows older than %s", prune_cutoff)
+    else:
+        logger.warning("Skipping prune — only %d markets this run", len(payload["markets"]))
 
     logger.info("LIVE write complete.")
     return summary
