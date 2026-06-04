@@ -11,13 +11,22 @@
 #   4. Ensure SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY env vars are set.
 #   5. Deploy. Trigger one manual run for an immediate populate.
 #
-# No Polymarket API key is required (public endpoints). Schedule: every
-# 10 minutes (markets/odds move fast).
+# No Polymarket API key is required (public endpoints).
+#
+# Depth knobs (tune in the startCommand below):
+#   --markets N        top N markets PER ordering (volume + liquidity, deduped) -> up to ~2N markets
+#   --holders N        top N holders (whales) per market
+#   --enrich-whales N  pull portfolio value + open positions for the top N whales
+#                      (0 disables; each whale = 2 extra public API calls)
+#
+# A full run at the values below makes ~150-200 public calls and takes a few
+# minutes — comfortably inside a 15-min slot. Raise the schedule interval if
+# you bump these a lot.
 
 [build]
 builder = "RAILPACK"
 
 [deploy]
-startCommand = "python scripts/sync_polymarket.py --live"
-cronSchedule = "*/10 * * * *"
+startCommand = "python scripts/sync_polymarket.py --live --markets 60 --holders 25 --enrich-whales 50"
+cronSchedule = "*/15 * * * *"
 restartPolicyType = "NEVER"

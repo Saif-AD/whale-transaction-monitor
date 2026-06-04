@@ -49,8 +49,25 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _fetch_markets_multi(pm, markets_limit: int) -> List[Any]:
+    """Pull markets across several orderings and dedupe by condition_id, so
+    coverage isn't limited to a single 'top by 24h volume' slice (a quiet
+    market with a huge whale still surfaces via the liquidity ordering)."""
+    seen = set()
+    out: List[Any] = []
+    for order in ("volume24hr", "liquidity", "volume"):
+        try:
+            for m in pm.get_top_markets(limit=markets_limit, order=order):
+                if m.condition_id and m.condition_id not in seen:
+                    seen.add(m.condition_id)
+                    out.append(m)
+        except Exception as e:
+            logger.warning("markets fetch failed (order=%s): %s", order, e)
+    return out
+
+
 def build_payload(
-    *, markets_limit: int, holders_per_market: int
+    *, markets_limit: int, holders_per_market: int, enrich_whales: int = 0
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Fetch everything from Polymarket and shape it into table rows."""
     market_rows: List[Dict[str, Any]] = []
@@ -58,7 +75,7 @@ def build_payload(
     whale_agg: Dict[str, Dict[str, Any]] = {}
 
     with PolymarketClient() as pm:
-        markets = pm.get_top_markets(limit=markets_limit)
+        markets = _fetch_markets_multi(pm, markets_limit)
         for m in markets:
             if not m.condition_id:
                 continue
@@ -110,6 +127,25 @@ def build_payload(
                 rec["total_amount"] += h.amount
                 rec["markets_count"] += 1
 
+        # Depth pass: for the biggest whales, pull their portfolio value +
+        # open positions so the leaderboard/drawer shows real holdings & PnL.
+        if enrich_whales > 0:
+            top = sorted(
+                whale_agg.values(), key=lambda r: r["total_amount"], reverse=True
+            )[:enrich_whales]
+            for rec in top:
+                wallet = rec["proxy_wallet"]
+                try:
+                    rec["total_value_usd"] = pm.get_user_value(wallet)
+                except Exception as e:
+                    logger.warning("value fetch failed for %s: %s", wallet[:10], e)
+                try:
+                    rec["positions"] = [
+                        p.to_dict() for p in pm.get_user_positions(wallet, limit=25)
+                    ]
+                except Exception as e:
+                    logger.warning("positions fetch failed for %s: %s", wallet[:10], e)
+
     return {
         "markets": market_rows,
         "holders": holder_rows,
@@ -117,8 +153,12 @@ def build_payload(
     }
 
 
-def run(*, live: bool, markets_limit: int, holders_per_market: int, client=None) -> Dict[str, int]:
-    payload = build_payload(markets_limit=markets_limit, holders_per_market=holders_per_market)
+def run(*, live: bool, markets_limit: int, holders_per_market: int, enrich_whales: int = 0, client=None) -> Dict[str, int]:
+    payload = build_payload(
+        markets_limit=markets_limit,
+        holders_per_market=holders_per_market,
+        enrich_whales=enrich_whales,
+    )
     summary = {
         "markets": len(payload["markets"]),
         "holders": len(payload["holders"]),
@@ -165,13 +205,19 @@ def main() -> int:
     g = p.add_mutually_exclusive_group()
     g.add_argument("--live", action="store_true", help="Write to Supabase (default: dry-run).")
     g.add_argument("--dry-run", action="store_true", help="Print only (default).")
-    p.add_argument("--markets", type=int, default=30, help="Top markets to sync (default 30).")
-    p.add_argument("--holders", type=int, default=15, help="Top holders per market (default 15).")
+    p.add_argument("--markets", type=int, default=50, help="Top markets per ordering (default 50; pulled across volume+liquidity, deduped).")
+    p.add_argument("--holders", type=int, default=20, help="Top holders per market (default 20).")
+    p.add_argument("--enrich-whales", type=int, default=40, help="Pull value+positions for the top N whales (default 40; 0 disables).")
     args = p.parse_args()
 
     live = args.live and not args.dry_run
     try:
-        run(live=live, markets_limit=args.markets, holders_per_market=args.holders)
+        run(
+            live=live,
+            markets_limit=args.markets,
+            holders_per_market=args.holders,
+            enrich_whales=args.enrich_whales,
+        )
     except Exception as e:
         logger.error("Polymarket sync failed: %s", e)
         return 1
