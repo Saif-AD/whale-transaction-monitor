@@ -13,20 +13,27 @@
 #
 # No Polymarket API key is required (public endpoints).
 #
-# Depth knobs (tune in the startCommand below):
-#   --markets N        top N markets PER ordering (volume + liquidity, deduped) -> up to ~2N markets
-#   --holders N        top N holders (whales) per market
-#   --enrich-whales N  pull portfolio value + open positions for the top N whales
-#                      (0 disables; each whale = 2 extra public API calls)
+# Markets are pulled from the /events endpoint, which carries REAL category
+# tags (Sports, Politics, Crypto, ...) and paginates for breadth.
 #
-# A full run at the values below makes ~150-200 public calls and takes a few
-# minutes — comfortably inside a 15-min slot. Raise the schedule interval if
-# you bump these a lot.
+# Depth knobs (tune in the startCommand below):
+#   --event-pages N      pages of events to pull (breadth)
+#   --events-per-page N  events per page
+#   --max-markets N      cap on stored market rows
+#   --holders-markets N  fetch holders only for the top N *contested* markets
+#                        (skips >97% near-resolved longshots so whale data
+#                         lands where the action is)
+#   --holders N          top holders (whales) per market
+#   --enrich-whales N    portfolio value + positions for the top N whales
+#
+# The run below stores up to ~400 markets across categories and makes a few
+# hundred public calls (a few minutes). Raise the schedule interval if you
+# push these much higher.
 
 [build]
 builder = "RAILPACK"
 
 [deploy]
-startCommand = "python scripts/sync_polymarket.py --live --markets 60 --holders 25 --enrich-whales 50"
+startCommand = "python scripts/sync_polymarket.py --live --event-pages 6 --events-per-page 50 --max-markets 400 --holders-markets 100 --holders 30 --enrich-whales 60"
 cronSchedule = "*/15 * * * *"
 restartPolicyType = "NEVER"

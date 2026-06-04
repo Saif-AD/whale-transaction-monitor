@@ -66,24 +66,53 @@ def _fetch_markets_multi(pm, markets_limit: int) -> List[Any]:
     return out
 
 
+def _max_price(prices: List[float]) -> float:
+    return max(prices) if prices else 0.0
+
+
 def build_payload(
-    *, markets_limit: int, holders_per_market: int, enrich_whales: int = 0
+    *,
+    event_pages: int,
+    events_per_page: int,
+    max_markets: int,
+    holders_markets: int,
+    holders_per_market: int,
+    enrich_whales: int = 0,
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """Fetch everything from Polymarket and shape it into table rows."""
+    """Fetch everything from Polymarket and shape it into table rows.
+
+    Markets come from the /events endpoint (real category tags + pagination).
+    We store up to `max_markets` rows, but only fetch holders for the top
+    `holders_markets` *contested* markets by volume (skipping near-resolved
+    longshots) so the whale data lands where the action actually is.
+    """
     market_rows: List[Dict[str, Any]] = []
     holder_rows: List[Dict[str, Any]] = []
     whale_agg: Dict[str, Dict[str, Any]] = {}
 
     with PolymarketClient() as pm:
-        markets = _fetch_markets_multi(pm, markets_limit)
+        markets = pm.get_markets_via_events(pages=event_pages, per_page=events_per_page)
+        if not markets:
+            logger.warning("events pull empty — falling back to markets endpoint")
+            markets = _fetch_markets_multi(pm, max_markets)
+
+        # Newest/biggest first; cap how many rows we store.
+        markets.sort(key=lambda m: m.volume_24h, reverse=True)
+        markets = markets[:max_markets]
+
+        # Holder fetching is the expensive part — only do it for the top
+        # contested markets (skip >97% near-resolved longshots).
+        contested = [m for m in markets if _max_price(m.outcome_prices) < 0.97]
+        holder_targets = {m.condition_id for m in contested[:holders_markets]}
+
         for m in markets:
-            if not m.condition_id:
-                continue
-            try:
-                holders = pm.get_market_holders(m.condition_id, limit=holders_per_market)
-            except Exception as e:
-                logger.warning("holders fetch failed for %s: %s", m.slug, e)
-                holders = []
+            holders = []
+            if m.condition_id in holder_targets:
+                try:
+                    holders = pm.get_market_holders(m.condition_id, limit=holders_per_market)
+                except Exception as e:
+                    logger.warning("holders fetch failed for %s: %s", m.slug, e)
+                    holders = []
 
             whale_flow = sum(h.amount for h in holders)
             market_rows.append({
@@ -91,6 +120,8 @@ def build_payload(
                 "question": m.question,
                 "slug": m.slug,
                 "category": m.category,
+                "tags": m.tags,
+                "competitive": m.competitive,
                 "outcomes": m.outcomes,
                 "outcome_prices": m.outcome_prices,
                 "clob_token_ids": m.clob_token_ids,
@@ -153,9 +184,15 @@ def build_payload(
     }
 
 
-def run(*, live: bool, markets_limit: int, holders_per_market: int, enrich_whales: int = 0, client=None) -> Dict[str, int]:
+def run(
+    *, live: bool, event_pages: int, events_per_page: int, max_markets: int,
+    holders_markets: int, holders_per_market: int, enrich_whales: int = 0, client=None,
+) -> Dict[str, int]:
     payload = build_payload(
-        markets_limit=markets_limit,
+        event_pages=event_pages,
+        events_per_page=events_per_page,
+        max_markets=max_markets,
+        holders_markets=holders_markets,
         holders_per_market=holders_per_market,
         enrich_whales=enrich_whales,
     )
@@ -205,16 +242,22 @@ def main() -> int:
     g = p.add_mutually_exclusive_group()
     g.add_argument("--live", action="store_true", help="Write to Supabase (default: dry-run).")
     g.add_argument("--dry-run", action="store_true", help="Print only (default).")
-    p.add_argument("--markets", type=int, default=50, help="Top markets per ordering (default 50; pulled across volume+liquidity, deduped).")
-    p.add_argument("--holders", type=int, default=20, help="Top holders per market (default 20).")
-    p.add_argument("--enrich-whales", type=int, default=40, help="Pull value+positions for the top N whales (default 40; 0 disables).")
+    p.add_argument("--event-pages", type=int, default=4, help="Pages of /events to pull (default 4).")
+    p.add_argument("--events-per-page", type=int, default=40, help="Events per page (default 40).")
+    p.add_argument("--max-markets", type=int, default=300, help="Max market rows to store (default 300).")
+    p.add_argument("--holders-markets", type=int, default=80, help="Fetch holders for the top N contested markets (default 80).")
+    p.add_argument("--holders", type=int, default=25, help="Top holders per market (default 25).")
+    p.add_argument("--enrich-whales", type=int, default=50, help="Pull value+positions for the top N whales (default 50; 0 disables).")
     args = p.parse_args()
 
     live = args.live and not args.dry_run
     try:
         run(
             live=live,
-            markets_limit=args.markets,
+            event_pages=args.event_pages,
+            events_per_page=args.events_per_page,
+            max_markets=args.max_markets,
+            holders_markets=args.holders_markets,
             holders_per_market=args.holders,
             enrich_whales=args.enrich_whales,
         )

@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -56,6 +56,8 @@ class Market:
     image: Optional[str]
     one_day_price_change: Optional[float]
     category: Optional[str] = None
+    tags: List[str] = field(default_factory=list)
+    competitive: Optional[float] = None
 
     @property
     def yes_price(self) -> Optional[float]:
@@ -74,7 +76,34 @@ class Market:
             "end_date": self.end_date,
             "image": self.image,
             "one_day_price_change": self.one_day_price_change,
+            "category": self.category,
+            "tags": self.tags,
+            "competitive": self.competitive,
         }
+
+
+# Polymarket top-level category tags, in display priority. The first match
+# wins as a market's `category`; everything else is kept in `tags`.
+_CATEGORY_PRIORITY = [
+    "Politics", "Sports", "Crypto", "Geopolitics", "Economy", "Business",
+    "Tech", "Science", "Culture", "Pop Culture", "World", "Elections",
+    "Weather", "Mentions",
+]
+# Tags that are housekeeping, not real categories.
+_GENERIC_TAGS = {
+    "hide from new", "all", "recurring", "daily", "weekly", "monthly",
+    "hourly", "trending", "new",
+}
+
+
+def _derive_category(tag_labels: List[str]) -> Tuple[Optional[str], List[str]]:
+    """Return (primary_category, clean_tags) from a list of tag labels."""
+    clean = [t for t in tag_labels if t and t.strip().lower() not in _GENERIC_TAGS]
+    for pref in _CATEGORY_PRIORITY:
+        for t in clean:
+            if t.strip().lower() == pref.lower():
+                return pref, clean
+    return (clean[0] if clean else None), clean
 
 
 @dataclass
@@ -183,6 +212,72 @@ class PolymarketClient:
                 image=m.get("image"),
                 one_day_price_change=m.get("oneDayPriceChange"),
             ))
+        return out
+
+    # ------------------------------------------------------------------
+    # Events-based pull (carries real category tags + paginates)
+    # ------------------------------------------------------------------
+    def get_events(
+        self, *, limit: int = 40, offset: int = 0, order: str = "volume24hr", active_only: bool = True
+    ) -> List[Dict[str, Any]]:
+        params = {
+            "limit": limit,
+            "offset": offset,
+            "order": order,
+            "ascending": "false",
+            "closed": "false",
+        }
+        if active_only:
+            params["active"] = "true"
+        resp = self._http.get(f"{GAMMA_BASE}/events", params=params)
+        resp.raise_for_status()
+        return resp.json() or []
+
+    def _market_from_event_row(self, m: Dict[str, Any], category: Optional[str], tags: List[str]) -> Optional[Market]:
+        cid = m.get("conditionId", "")
+        if not cid or m.get("closed") or m.get("active") is False:
+            return None
+        prices = [_to_float(p) for p in _as_list(m.get("outcomePrices"))]
+        return Market(
+            condition_id=cid,
+            question=m.get("question", ""),
+            slug=m.get("slug", ""),
+            outcomes=[str(o) for o in _as_list(m.get("outcomes"))],
+            outcome_prices=prices,
+            clob_token_ids=[str(t) for t in _as_list(m.get("clobTokenIds"))],
+            volume_24h=_to_float(m.get("volume24hr")),
+            liquidity=_to_float(m.get("liquidityNum") or m.get("liquidity")),
+            end_date=m.get("endDate"),
+            image=m.get("image"),
+            one_day_price_change=m.get("oneDayPriceChange"),
+            category=category,
+            tags=tags,
+            competitive=_to_float(m.get("competitive")) if m.get("competitive") is not None else None,
+        )
+
+    def get_markets_via_events(
+        self, *, pages: int = 3, per_page: int = 40, order: str = "volume24hr"
+    ) -> List[Market]:
+        """Paginate /events and flatten into Market objects enriched with the
+        event's category + tags. Dedupes by condition_id across pages."""
+        out: List[Market] = []
+        seen = set()
+        for page in range(pages):
+            try:
+                events = self.get_events(limit=per_page, offset=page * per_page, order=order)
+            except httpx.HTTPError as e:
+                logger.warning("events page %d fetch failed: %s", page, e)
+                break
+            if not events:
+                break
+            for ev in events:
+                labels = [t.get("label", "") for t in (ev.get("tags") or [])]
+                category, tags = _derive_category(labels)
+                for m in ev.get("markets") or []:
+                    mk = self._market_from_event_row(m, category, tags)
+                    if mk and mk.condition_id not in seen:
+                        seen.add(mk.condition_id)
+                        out.append(mk)
         return out
 
     # ------------------------------------------------------------------
