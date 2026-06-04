@@ -5,6 +5,16 @@ Each entry defines:
   type     — entity category (cex, fund, custodian, bridge, stablecoin_issuer, etc.)
   min_usd  — minimum USD filter for transfer mining.
              High-volume CEXes use $1M to avoid noise; smaller entities use $0.
+
+Slug verification: not all slugs in this file are guaranteed to resolve on
+Arkham. The backfill loop already tolerates per-entity failures (see
+arkham_backfill.backfill._process_entity) and logs a WARNING for each
+404. If you want to validate the full seed list before a live run, use:
+
+    python -m arkham_backfill.verify_slugs --dry-run
+
+(see deliverable 1 of the Solana expansion handoff). The CREDIT_FLOOR
+guard remains the safety net.
 """
 
 from __future__ import annotations
@@ -55,4 +65,108 @@ _INFRA = [
     Entity("tether", "stablecoin_issuer"),
 ]
 
-ENTITY_SEED_LIST: list[Entity] = _CEXES + _FUNDS + _INFRA
+
+# ---------------------------------------------------------------------------
+# Solana-native expansion (Colosseum demo)
+# ---------------------------------------------------------------------------
+# Slugs sourced from the Arkham public entity directory. Any slug that 404s
+# is skipped silently with a WARNING by the backfill loop. If > 30% of new
+# slugs 404 in a single run, the operator should investigate before a full
+# live backfill — see ACCEPTANCE criteria in handoff doc.
+_SOLANA_NATIVE = [
+    Entity("jito-foundation", "fund"),
+    Entity("marinade-finance", "fund"),
+    Entity("solana-foundation", "fund"),
+    Entity("jupiter-aggregator", "fund"),
+    Entity("drift-protocol", "fund"),
+    Entity("kamino-finance", "fund"),
+    Entity("marginfi", "fund"),
+    Entity("phoenix", "fund"),
+    Entity("raydium", "fund"),
+    Entity("orca", "fund"),
+    Entity("meteora", "fund"),
+    Entity("helium-foundation", "fund"),
+    Entity("pump-fun", "fund"),
+    Entity("magic-eden", "fund"),
+    Entity("tensor", "fund"),
+]
+
+# ---------------------------------------------------------------------------
+# Additional funds / VCs / institutions we missed in the original seed list
+# ---------------------------------------------------------------------------
+_MORE_FUNDS = [
+    Entity("multicoin-capital", "fund"),
+    Entity("paradigm", "fund"),
+    Entity("electric-capital", "fund"),
+    Entity("pantera-capital", "fund"),
+    Entity("delphi-digital", "fund"),
+    Entity("ark-invest", "fund"),
+    Entity("franklin-templeton", "fund"),
+    Entity("securitize", "fund"),
+    Entity("ondo-finance", "fund"),
+    Entity("blackrock-bitcoin-etf", "fund"),
+    Entity("fidelity", "fund"),
+    Entity("vaneck", "fund"),
+]
+
+# ---------------------------------------------------------------------------
+# Bridges / interop infra
+# ---------------------------------------------------------------------------
+_BRIDGES = [
+    Entity("wormhole", "bridge"),
+    Entity("layerzero", "bridge"),
+    Entity("stargate", "bridge"),
+    Entity("synapse", "bridge"),
+    Entity("hop-protocol", "bridge"),
+    Entity("across-protocol", "bridge"),
+    Entity("axelar", "bridge"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Curated-page backfill: Arkham slugs for the curated_entities rows that are
+# still missing addresses. Mining these into the `addresses` table lets
+# scripts/enrich_curated_entities_from_labels.py auto-fill the figure/entity
+# pages (match is by entity name, not slug). Slugs are best-effort guesses
+# at Arkham's directory; any 404 is skipped with a WARNING, and
+# `python -m arkham_backfill.verify_slugs --dry-run` prunes them before a
+# live run once ARKHAM_API_KEY is set.
+_CURATED_PAGE_TARGETS = [
+    # Protocol treasuries / DAOs
+    Entity("balancer", "protocol"),
+    Entity("optimism-foundation", "protocol"),
+    Entity("pancakeswap", "protocol"),
+    Entity("sushiswap", "protocol"),
+    Entity("world-liberty-financial", "protocol"),
+    Entity("chainlink", "protocol"),
+    # ETF issuers / public-company treasuries
+    Entity("21shares", "fund"),
+    Entity("bitwise", "fund"),
+    Entity("valkyrie", "fund"),
+    Entity("tesla", "company"),
+    Entity("union-square-ventures", "fund"),
+    Entity("lightspeed-faction", "fund"),
+    # Government / law-enforcement / illicit (high-signal, Arkham-tracked)
+    Entity("government-of-el-salvador", "government"),
+    Entity("us-doj", "government"),
+    Entity("us-government", "government"),
+    Entity("german-government", "government"),
+    Entity("lazarus-group", "historical"),
+    Entity("wormhole-exploiter", "historical"),
+    # Individuals (MEDIUM signal via ENTITY_TYPE_OVERRIDES)
+    Entity("changpeng-zhao", "individual"),
+    Entity("charles-hoskinson", "individual"),
+    Entity("gavin-wood", "individual"),
+    Entity("raoul-pal", "individual"),
+    Entity("anthony-pompliano", "individual"),
+    Entity("sergey-nazarov", "individual"),
+    Entity("rune-christensen", "individual"),
+    Entity("lyn-alden", "individual"),
+    Entity("logan-paul", "individual"),
+]
+
+
+ENTITY_SEED_LIST: list[Entity] = (
+    _CEXES + _FUNDS + _INFRA + _SOLANA_NATIVE + _MORE_FUNDS + _BRIDGES
+    + _CURATED_PAGE_TARGETS
+)
