@@ -1,0 +1,23 @@
+# Railway service definition for the Polymarket sync cron.
+#
+# Pulls top markets + whale holders from Polymarket's public APIs and
+# upserts them into Supabase (polymarket_markets / polymarket_whales /
+# polymarket_market_holders) for the Sonar "Polymarket terminal" frontend.
+#
+# Provisioning checklist (one-time, Railway dashboard):
+#   1. Apply migrations/polymarket_tables.sql in Supabase first.
+#   2. Create a new service in the project, point it at this repo.
+#   3. Settings -> Source -> Config Path = railway.polymarket.toml.
+#   4. Ensure SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY env vars are set.
+#   5. Deploy. Trigger one manual run for an immediate populate.
+#
+# No Polymarket API key is required (public endpoints). Schedule: every
+# 10 minutes (markets/odds move fast).
+
+[build]
+builder = "RAILPACK"
+
+[deploy]
+startCommand = "python scripts/sync_polymarket.py --live"
+cronSchedule = "*/10 * * * *"
+restartPolicyType = "NEVER"
