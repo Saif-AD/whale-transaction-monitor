@@ -20,20 +20,21 @@
 #   --event-pages N      pages of events to pull (breadth)
 #   --events-per-page N  events per page
 #   --max-markets N      cap on stored market rows
-#   --holders-markets N  fetch holders only for the top N *contested* markets
-#                        (skips >97% near-resolved longshots so whale data
-#                         lands where the action is)
+#   --holders-markets N  fetch holders for the top N stored markets. Set this
+#                        == --max-markets so EVERY stored market gets a holder
+#                        fetch (no "No holdings found" orphans). Near-resolved
+#                        >97% longshots are dropped before storage either way.
 #   --holders N          top holders (whales) per market
 #   --enrich-whales N    portfolio value + positions for the top N whales
 #
-# The run below stores up to ~400 markets across categories and makes a few
-# hundred public calls (a few minutes). Raise the schedule interval if you
-# push these much higher.
+# The run below stores up to ~400 markets across categories, fetches holders
+# for ALL of them (~400 calls), and pulls 100 holders each — a few hundred
+# public calls, a few minutes. Raise the schedule interval if you push higher.
 
 [build]
 builder = "RAILPACK"
 
 [deploy]
-startCommand = "python scripts/sync_polymarket.py --live --event-pages 6 --events-per-page 50 --max-markets 400 --holders-markets 100 --holders 30 --enrich-whales 60"
+startCommand = "python scripts/sync_polymarket.py --live --event-pages 6 --events-per-page 50 --max-markets 400 --holders-markets 400 --holders 100 --enrich-whales 60"
 cronSchedule = "*/15 * * * *"
 restartPolicyType = "NEVER"

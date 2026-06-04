@@ -96,14 +96,18 @@ def build_payload(
             logger.warning("events pull empty — falling back to markets endpoint")
             markets = _fetch_markets_multi(pm, max_markets)
 
-        # Newest/biggest first; cap how many rows we store.
+        # Drop near-resolved longshots (e.g. the ~48 "Will <team> win the World
+        # Cup" sub-markets sitting at ~0% YES). They have no whale action and
+        # would otherwise be stored as orphan rows that show "No holdings found".
+        markets = [m for m in markets if _max_price(m.outcome_prices) < 0.97]
         markets.sort(key=lambda m: m.volume_24h, reverse=True)
         markets = markets[:max_markets]
 
-        # Holder fetching is the expensive part — only do it for the top
-        # contested markets (skip >97% near-resolved longshots).
-        contested = [m for m in markets if _max_price(m.outcome_prices) < 0.97]
-        holder_targets = {m.condition_id for m in contested[:holders_markets]}
+        # Fetch holders for EVERY stored market (top `holders_markets` by volume,
+        # which defaults to all of them) so we never store a market without a
+        # holder attempt. This is what keeps "No holdings found" rare — the only
+        # ones left are markets Polymarket itself reports zero holders for.
+        holder_targets = {m.condition_id for m in markets[:holders_markets]}
 
         for m in markets:
             holders = []
@@ -245,8 +249,8 @@ def main() -> int:
     p.add_argument("--event-pages", type=int, default=4, help="Pages of /events to pull (default 4).")
     p.add_argument("--events-per-page", type=int, default=40, help="Events per page (default 40).")
     p.add_argument("--max-markets", type=int, default=300, help="Max market rows to store (default 300).")
-    p.add_argument("--holders-markets", type=int, default=80, help="Fetch holders for the top N contested markets (default 80).")
-    p.add_argument("--holders", type=int, default=25, help="Top holders per market (default 25).")
+    p.add_argument("--holders-markets", type=int, default=300, help="Fetch holders for the top N stored markets (default 300 == all). Lower it only to rate-limit.")
+    p.add_argument("--holders", type=int, default=50, help="Top holders per market (default 50).")
     p.add_argument("--enrich-whales", type=int, default=50, help="Pull value+positions for the top N whales (default 50; 0 disables).")
     args = p.parse_args()
 
