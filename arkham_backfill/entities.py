@@ -104,7 +104,9 @@ _MORE_FUNDS = [
     Entity("franklin-templeton", "fund"),
     Entity("securitize", "fund"),
     Entity("ondo-finance", "fund"),
-    Entity("blackrock-bitcoin-etf", "fund"),
+    # NOTE: "blackrock-bitcoin-etf" removed — not queryable on the transfers
+    # endpoint (HTTP 400) and redundant with the "blackrock" entity above,
+    # which already covers IBIT addresses.
     Entity("fidelity", "fund"),
     Entity("vaneck", "fund"),
 ]
@@ -119,7 +121,7 @@ _BRIDGES = [
     Entity("synapse", "bridge"),
     Entity("hop-protocol", "bridge"),
     Entity("across-protocol", "bridge"),
-    Entity("axelar", "bridge"),
+    # NOTE: "axelar" removed — not queryable on the transfers endpoint (HTTP 400).
 ]
 
 
@@ -134,7 +136,8 @@ _BRIDGES = [
 _CURATED_PAGE_TARGETS = [
     # Protocol treasuries / DAOs
     Entity("balancer", "protocol"),
-    Entity("optimism-foundation", "protocol"),
+    # NOTE: "optimism-foundation" removed — not queryable on the transfers
+    # endpoint (HTTP 400). Re-add with a verified slug if needed.
     Entity("pancakeswap", "protocol"),
     Entity("sushiswap", "protocol"),
     Entity("world-liberty-financial", "protocol"),

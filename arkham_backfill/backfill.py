@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import httpx
+
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -169,6 +171,7 @@ def run_backfill(
         "total_addresses": 0,
         "total_upserted": 0,
         "total_skipped_chain": 0,
+        "total_skipped_slug": 0,
         "total_errors": 0,
         "per_entity": {},
     }
@@ -183,6 +186,7 @@ def run_backfill(
             summary["total_addresses"] += entity_stats["found"]
             summary["total_upserted"] += entity_stats["upserted"]
             summary["total_skipped_chain"] += entity_stats["skipped_chain"]
+            summary["total_skipped_slug"] += entity_stats.get("skipped_slug", 0)
             summary["total_errors"] += entity_stats["errors"]
 
             logger.info(
@@ -200,10 +204,11 @@ def run_backfill(
 
     logger.info(
         "Backfill complete: %d entities processed, %d total addresses, "
-        "%d upserted, %d errors",
+        "%d upserted, %d slugs skipped (not queryable), %d errors",
         summary["entities_processed"],
         summary["total_addresses"],
         summary["total_upserted"],
+        summary["total_skipped_slug"],
         summary["total_errors"],
     )
     return summary
@@ -217,7 +222,7 @@ def _process_entity(
     live: bool,
     limit: int,
 ) -> Dict[str, int]:
-    stats = {"found": 0, "upserted": 0, "skipped_chain": 0, "errors": 0}
+    stats = {"found": 0, "upserted": 0, "skipped_chain": 0, "skipped_slug": 0, "errors": 0}
 
     try:
         transfers = ark.get_entity_transfers(
@@ -225,6 +230,22 @@ def _process_entity(
         )
     except CreditBudgetExhausted:
         raise
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code
+        if 400 <= status < 500:
+            # 4xx means the slug is not a valid/queryable entity on the
+            # transfers endpoint (bad slug, alias, or tag-only entity). This
+            # is a seed-list data issue, not a runtime failure — skip it so it
+            # doesn't inflate the error count or fail the cron exit code.
+            logger.warning(
+                "Skipping %s: Arkham transfers endpoint returned %d (slug not queryable)",
+                entity.slug, status,
+            )
+            stats["skipped_slug"] += 1
+            return stats
+        logger.error("Failed to fetch transfers for %s: %s", entity.slug, e)
+        stats["errors"] += 1
+        return stats
     except Exception as e:
         logger.error("Failed to fetch transfers for %s: %s", entity.slug, e)
         stats["errors"] += 1

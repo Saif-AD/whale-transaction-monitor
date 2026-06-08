@@ -128,15 +128,31 @@ def main() -> int:
         )
         credits_left = ark.last_credits_remaining
 
+        # Budget visibility: the per-response header tracks the label-lookup
+        # meter; /subscription/intel-usage gives the real period usage. Best
+        # effort — never fail the run over a usage probe.
+        try:
+            usage = ark.get_intel_usage()
+            logger.info(
+                "Intel usage — used=%s limit=%s remaining=%s period_start=%s",
+                usage.get("used") or usage.get("count") or usage.get("usage"),
+                usage.get("limit"),
+                usage.get("remaining"),
+                usage.get("periodStart") or usage.get("period_start"),
+            )
+        except Exception as e:
+            logger.warning("intel-usage probe failed (non-fatal): %s", e)
+
     elapsed = time.monotonic() - t0
     logger.info(
         "Backfill done in %.0fs — entities=%d addresses=%d upserted=%d "
-        "skipped_chain=%d errors=%d credits_remaining=%s",
+        "skipped_chain=%d skipped_slug=%d errors=%d credits_remaining=%s",
         elapsed,
         summary.get("entities_processed", 0),
         summary.get("total_addresses", 0),
         summary.get("total_upserted", 0),
         summary.get("total_skipped_chain", 0),
+        summary.get("total_skipped_slug", 0),
         summary.get("total_errors", 0),
         credits_left if credits_left is not None else "unknown",
     )

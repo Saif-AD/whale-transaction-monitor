@@ -1,0 +1,34 @@
+# Railway service definition for the Arkham Polymarket enrichment cron.
+#
+# Hybrid layer on top of the public Polymarket cron (railway.polymarket.toml):
+# the public cron writes market breadth/odds/volume; THIS cron uses Arkham's
+# entity-resolved Polymarket endpoints to add real whale names, a PnL
+# leaderboard, and a live whale-activity tape into Supabase.
+#
+# Reads polymarket_markets (written by the public cron) and writes:
+#   * polymarket_whales.arkham_entity  (named whales)
+#   * polymarket_leaderboard           (PnL-ranked traders)
+#   * polymarket_activity              (live whale trade tape)
+# Tables: migrations/polymarket_arkham.sql (apply first).
+#
+# Provisioning checklist (one-time, Railway dashboard):
+#   1. Apply migrations/polymarket_arkham.sql in Supabase.
+#   2. Create a NEW service, point it at this repo.
+#   3. Settings -> Source -> Config Path = railway.arkham_polymarket.toml
+#   4. Set env vars: ARKHAM_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+#   5. Deploy. Trigger one manual run to verify writes + credit burn.
+#
+# Credit cost (Arkham): leaderboard 10 + top-holders 3/market + activity 5.
+# At --top-markets 100 that is ~10 + 300 + 5 + 10 ≈ 325 credits/run, ~7.8k/day.
+# Lower --top-markets or the schedule if you need to conserve credits.
+#
+# Schedule: hourly at :30 (offset from the public cron's */15 cadence so the
+# market list it reads is already fresh).
+
+[build]
+builder = "RAILPACK"
+
+[deploy]
+startCommand = "python scripts/sync_arkham_polymarket.py --live --top-markets 100 --holders-per-market 50 --activity-min-usd 10000"
+cronSchedule = "30 * * * *"
+restartPolicyType = "NEVER"

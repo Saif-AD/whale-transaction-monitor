@@ -24,7 +24,10 @@ from arkham_backfill.constants import CREDIT_FLOOR
 
 logger = logging.getLogger(__name__)
 
-ARKHAM_BASE_URL = "https://api.arkhamintelligence.com"
+# Current Arkham API host (per https://arkm.com/api/docs). The legacy
+# api.arkhamintelligence.com host still resolves, but API keys are now issued
+# for the api.arkm.com surface — use it to avoid a future cutover break.
+ARKHAM_BASE_URL = "https://api.arkm.com"
 
 
 class CreditBudgetExhausted(Exception):
@@ -158,6 +161,16 @@ class ArkhamClient:
         resp = self._request("GET", f"/intelligence/entity/{slug}")
         return resp.json()
 
+    def get_intel_usage(self) -> Dict[str, Any]:
+        """Fetch credit/label usage for the current billing period.
+
+        GET /subscription/intel-usage — returns total count, per-seat limit,
+        per-chain breakdown, and period start. Used for budget logging so we
+        can see real consumption beyond the per-response header.
+        """
+        resp = self._request("GET", "/subscription/intel-usage")
+        return resp.json()
+
     def get_entity_transfers(
         self,
         slug: str,
@@ -227,3 +240,92 @@ class ArkhamClient:
                 })
 
         return results
+
+    # ------------------------------------------------------------------
+    # Polymarket (entity-resolved markets, holders, leaderboard, activity)
+    # ------------------------------------------------------------------
+
+    def get_polymarket_top_holders(
+        self, condition_id: str, *, limit: int = 100, outcome: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """GET /polymarket/top-holders/{conditionId} (3 credits/call).
+
+        Returns top holders for a market, entity-resolved by Arkham (real
+        names where known). `outcome` 0=Yes, 1=No, omit for all tokens.
+        """
+        params: Dict[str, Any] = {"limit": max(1, min(limit, 200))}
+        if outcome is not None:
+            params["outcome"] = outcome
+        resp = self._request(
+            "GET", f"/polymarket/top-holders/{condition_id}", params=params,
+        )
+        return self._as_rows(resp.json(), key="holders")
+
+    def get_polymarket_leaderboard(
+        self,
+        *,
+        period: str = "1d",
+        order: str = "desc",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """GET /polymarket/leaderboard (10 credits/call).
+
+        PnL-ranked traders for the period (1d/1w/1m/all). order desc=top
+        traders, asc=worst.
+        """
+        params = {
+            "period": period,
+            "order": order,
+            "limit": max(1, min(limit, 200)),
+            "offset": offset,
+        }
+        resp = self._request("GET", "/polymarket/leaderboard", params=params)
+        return self._as_rows(resp.json(), key="leaderboard")
+
+    def get_polymarket_activity(
+        self,
+        *,
+        min_usd: Optional[int] = None,
+        condition_id: Optional[str] = None,
+        actions: Optional[List[str]] = None,
+        limit: int = 100,
+        offset: int = 0,
+        sort_by: str = "time",
+        sort_order: str = "desc",
+    ) -> List[Dict[str, Any]]:
+        """GET /polymarket/activity (5 credits/call).
+
+        Live trade tape, filterable by minimum USD notional, market, and
+        action (buy/sell). This powers the "terminal" activity feed.
+        """
+        params: Dict[str, Any] = {
+            "limit": max(1, min(limit, 500)),
+            "offset": offset,
+            "sortBy": sort_by,
+            "sortOrder": sort_order,
+        }
+        if min_usd is not None:
+            params["minUsd"] = min_usd
+        if condition_id:
+            params["conditionID"] = condition_id
+        if actions:
+            params["actions"] = actions
+        resp = self._request("GET", "/polymarket/activity", params=params)
+        return self._as_rows(resp.json(), key="activity")
+
+    @staticmethod
+    def _as_rows(data: Any, *, key: str) -> List[Dict[str, Any]]:
+        """Normalize an Arkham response into a list of row dicts.
+
+        Endpoints return either a bare array or an object wrapping the array
+        under a data/items/<key> field — handle both.
+        """
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for candidate in (key, "data", "items", "results"):
+                val = data.get(candidate)
+                if isinstance(val, list):
+                    return val
+        return []
