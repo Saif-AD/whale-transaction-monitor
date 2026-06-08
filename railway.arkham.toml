@@ -30,5 +30,8 @@ builder = "RAILPACK"
 
 [deploy]
 startCommand = "python scripts/sync_arkham_cron.py --live --batch-size 15 --transfer-limit 40 --max-per-entity 25"
-cronSchedule = "0 */2 * * *"
+# TEMP one-shot: cronSchedule removed so a redeploy runs the script ONCE
+# immediately (restartPolicyType=NEVER => runs then exits). Restore the
+# schedule below after verifying a successful run:
+#   cronSchedule = "0 */2 * * *"
 restartPolicyType = "NEVER"
