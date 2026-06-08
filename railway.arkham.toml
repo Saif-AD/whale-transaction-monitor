@@ -1,0 +1,34 @@
+# Railway service definition for the Arkham wallet-discovery cron.
+#
+# Mines Arkham transfer data for a rotating batch of entities each run,
+# upserts discovered wallets into Supabase `addresses`, then bridges them
+# into `curated_entities.addresses` for the Sonar figure/entity pages.
+#
+# Provisioning checklist (one-time, Railway dashboard):
+#   1. Create a NEW service in the project, point it at this repo.
+#   2. Settings -> Source -> Config Path = railway.arkham.toml
+#      (type the path manually if the dropdown is stale)
+#   3. Set env vars on THIS service:
+#        ARKHAM_API_KEY          (required — from Arkham dashboard)
+#        SUPABASE_URL
+#        SUPABASE_SERVICE_ROLE_KEY
+#   4. Deploy. Trigger one manual run to verify credits + writes.
+#
+# Depth knobs (tune in startCommand below):
+#   --batch-size N       entities per run (default 15; rotates hourly through
+#                        the full ~86-entity seed list)
+#   --transfer-limit N   transfers fetched per entity (default 40)
+#   --max-per-entity N   addresses appended per curated entity after bridge
+#
+# Credit safety: ArkhamClient aborts when credits drop below CREDIT_FLOOR
+# (500). Raise batch-size or lower the schedule if you need more throughput.
+#
+# Schedule: every 2 hours. Full entity list cycles in ~12 runs (~24h).
+
+[build]
+builder = "RAILPACK"
+
+[deploy]
+startCommand = "python scripts/sync_arkham_cron.py --live --batch-size 15 --transfer-limit 40 --max-per-entity 25"
+cronSchedule = "0 */2 * * *"
+restartPolicyType = "NEVER"

@@ -21,7 +21,7 @@ NANSEN_API_KEY = ""  # Replace with actual key or use env var
 
 # Arkham Intelligence API (https://arkhamintelligence.com)
 # Used for entity resolution and address labeling
-ARKHAM_API_KEY = ""  # Replace with actual key or use env var
+ARKHAM_API_KEY = os.getenv("ARKHAM_API_KEY", "")
 
 # Default admin key for maintenance endpoints
 ADMIN_API_KEY = "dev_key"  # Replace with a secure key in production
