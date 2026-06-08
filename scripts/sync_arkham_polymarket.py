@@ -3,22 +3,25 @@
 
 Hybrid layer on top of scripts/sync_polymarket.py (public Gamma/Data APIs):
 the public cron writes market breadth + odds + volume into polymarket_markets;
-this cron uses Arkham's entity-resolved Polymarket endpoints to add the parts
-the public API can't:
+this cron uses Arkham's Polymarket endpoints to add the parts the public API
+can't:
 
-  1. arkham_entity (real names) on polymarket_whales  — fixes "Whales = —"
-  2. polymarket_leaderboard  — PnL-ranked traders (Arkham /polymarket/leaderboard)
-  3. polymarket_activity     — live whale trade tape (Arkham /polymarket/activity)
+  1. polymarket_leaderboard  — PnL-ranked traders (Arkham /polymarket/leaderboard)
+  2. polymarket_activity     — live whale trade tape (Arkham /polymarket/activity)
+  3. arkham_entity (real names) on polymarket_whales — fixes "Whales = —"
 
-Top-holders are fetched for the top N markets by volume (already stored by the
-public cron) to harvest entity-resolved names.
+NOTE: Arkham's Polymarket endpoints return raw wallet addresses, not entity
+names. Names are resolved best-effort via /intelligence/address (1 credit each)
+for the highest-signal wallets (top whales + leaderboard + activity); most
+proxies map to a generic "Polymarket Deposit Wallet" label and are skipped, so
+only genuinely-attributed wallets get a name.
 
 Schema: migrations/polymarket_arkham.sql (apply first).
 
 Usage:
     python scripts/sync_arkham_polymarket.py --dry-run
     python scripts/sync_arkham_polymarket.py --live
-    python scripts/sync_arkham_polymarket.py --live --top-markets 100 --activity-min-usd 10000
+    python scripts/sync_arkham_polymarket.py --live --activity-min-usd 10000 --resolve-names 150
 """
 
 from __future__ import annotations
@@ -65,20 +68,33 @@ def _to_float(v: Any, default: float = 0.0) -> float:
         return default
 
 
-def _entity_name(row: Dict[str, Any]) -> Optional[str]:
-    """Extract an Arkham-resolved entity name from a holder/trader row."""
-    for key in ("arkhamEntity", "entity"):
-        ent = row.get(key)
-        if isinstance(ent, dict):
-            name = ent.get("name")
-            if name:
-                return name
-    return _pick(row, "entityName", "entity_name")
-
-
 def _wallet(row: Dict[str, Any]) -> Optional[str]:
-    w = _pick(row, "address", "proxyWallet", "proxy_wallet", "wallet", "traderAddress")
+    w = _pick(row, "userAddress", "address", "proxyWallet", "proxy_wallet", "wallet", "traderAddress")
     return w.lower() if isinstance(w, str) and w.startswith("0x") else w
+
+
+# Generic Arkham labels that are not useful as a "whale name" (proxies /
+# deposit contracts most Polymarket traders resolve to).
+_GENERIC_LABEL_TOKENS = ("polymarket", "deposit", "proxy", "unknown")
+
+
+def _resolve_entity_name(intel: Dict[str, Any]) -> Optional[str]:
+    """Pull a meaningful entity/label name from an /intelligence/address row.
+
+    Prefer a real Arkham entity; fall back to a non-generic label. Skip the
+    generic 'Polymarket Deposit Wallet'-style labels almost every proxy maps
+    to, since those add no signal.
+    """
+    ent = intel.get("arkhamEntity")
+    if isinstance(ent, dict) and ent.get("name"):
+        return ent["name"]
+    label = intel.get("arkhamLabel")
+    if isinstance(label, dict) and label.get("name"):
+        nm = label["name"]
+        low = nm.lower()
+        if not any(tok in low for tok in _GENERIC_LABEL_TOKENS):
+            return nm
+    return None
 
 
 def _to_iso(v: Any) -> Optional[str]:
@@ -106,44 +122,13 @@ def build_payload(
     ark: ArkhamClient,
     sb,
     *,
-    top_markets: int,
-    holders_per_market: int,
     leaderboard_limit: int,
     activity_limit: int,
     activity_min_usd: int,
     period: str,
+    resolve_names: int,
 ) -> Dict[str, List[Dict[str, Any]]]:
-    resolved_names: Dict[str, str] = {}
-
-    # 1. Top markets (already stored by the public cron) → harvest named holders.
-    market_cids: List[str] = []
-    try:
-        res = (
-            sb.table("polymarket_markets")
-            .select("condition_id")
-            .order("volume_24h", desc=True)
-            .limit(top_markets)
-            .execute()
-        )
-        market_cids = [r["condition_id"] for r in (res.data or []) if r.get("condition_id")]
-    except Exception as e:
-        logger.warning("could not read top markets from Supabase: %s", e)
-
-    for cid in market_cids:
-        try:
-            holders = ark.get_polymarket_top_holders(cid, limit=holders_per_market)
-        except CreditBudgetExhausted:
-            raise
-        except Exception as e:
-            logger.warning("top-holders failed for %s: %s", cid[:12], e)
-            continue
-        for h in holders:
-            w = _wallet(h)
-            name = _entity_name(h)
-            if w and name:
-                resolved_names.setdefault(w, name)
-
-    # 2. Leaderboard (PnL-ranked) → owned table + name harvest.
+    # 1. Leaderboard (PnL-ranked traders) → owned table.
     leaderboard_rows: List[Dict[str, Any]] = []
     try:
         lb = ark.get_polymarket_leaderboard(period=period, limit=leaderboard_limit)
@@ -151,16 +136,13 @@ def build_payload(
             w = _wallet(row)
             if not w:
                 continue
-            name = _entity_name(row)
-            if name:
-                resolved_names.setdefault(w, name)
             leaderboard_rows.append({
                 "proxy_wallet": w,
                 "period": period,
-                "entity_name": name,
-                "name": _pick(row, "name", "pseudonym"),
-                "profile_image": _pick(row, "profileImage", "profile_image", default=""),
-                "pnl": _to_float(_pick(row, "pnl", "profit", "realizedPnl")),
+                "entity_name": None,  # filled by name resolution below
+                "name": None,
+                "profile_image": "",
+                "pnl": _to_float(_pick(row, "periodPnl", "pnl", "profit")),
                 "volume": _to_float(_pick(row, "volume", "usdVolume", "vol")),
                 "rank": int(_pick(row, "rank", default=i + 1) or i + 1),
                 "updated_at": _now(),
@@ -170,7 +152,7 @@ def build_payload(
     except Exception as e:
         logger.warning("leaderboard fetch failed: %s", e)
 
-    # 3. Activity tape (whale trades over a USD floor) → owned table + names.
+    # 2. Activity tape (whale trades over a USD floor) → owned table.
     activity_rows: List[Dict[str, Any]] = []
     try:
         activity = ark.get_polymarket_activity(
@@ -180,26 +162,25 @@ def build_payload(
             w = _wallet(a)
             if not w:
                 continue
-            name = _entity_name(a)
-            if name:
-                resolved_names.setdefault(w, name)
-            ts = _to_iso(_pick(a, "timestamp", "time", "ts"))
-            side = _pick(a, "side", "direction", "action")
-            cid = _pick(a, "conditionID", "conditionId", "condition_id")
+            ts = _to_iso(_pick(a, "blockTimestamp", "timestamp", "time", "ts"))
+            side = _pick(a, "direction", "side", "action")
+            cid = _pick(a, "conditionId", "conditionID", "condition_id")
             if not ts or not cid or not side:
                 continue
+            size = _to_float(_pick(a, "size", "shares"))
+            usd = _to_float(_pick(a, "notional", "usd", "usdValue", "usd_value"))
             activity_rows.append({
                 "tx_hash": _pick(a, "transactionHash", "txHash", "tx_hash"),
                 "condition_id": cid,
                 "proxy_wallet": w,
-                "entity_name": name,
-                "name": _pick(a, "name", "pseudonym"),
+                "entity_name": None,  # filled by name resolution below
+                "name": None,
                 "side": str(side).lower(),
                 "outcome": _pick(a, "outcome"),
                 "outcome_index": _pick(a, "outcomeIndex", "outcome_index"),
-                "usd_value": _to_float(_pick(a, "usd", "usdValue", "usd_value")),
-                "price": _to_float(_pick(a, "price")) or None,
-                "size": _to_float(_pick(a, "size", "shares")) or None,
+                "usd_value": usd,
+                "price": (usd / size) if size else None,
+                "size": size or None,
                 "ts": ts,
                 "updated_at": _now(),
             })
@@ -208,11 +189,59 @@ def build_payload(
     except Exception as e:
         logger.warning("activity fetch failed: %s", e)
 
+    # 3. Best-effort name resolution. Arkham's Polymarket endpoints return raw
+    #    wallets; resolve the highest-signal ones (top leaderboard + activity +
+    #    existing whales) to a real entity via /intelligence/address. Most
+    #    proxies map to a generic "Polymarket Deposit Wallet" label (skipped),
+    #    so only genuinely-attributed wallets get a name.
+    resolved_names: Dict[str, str] = {}
+    if resolve_names > 0:
+        candidates: List[str] = []
+        seen: set = set()
+        # Existing top whales first (fixes "Whales = —" on the leaderboard panel).
+        try:
+            wres = (
+                sb.table("polymarket_whales")
+                .select("proxy_wallet")
+                .order("total_amount", desc=True)
+                .limit(resolve_names)
+                .execute()
+            )
+            for r in (wres.data or []):
+                w = (r.get("proxy_wallet") or "").lower()
+                if w and w not in seen:
+                    seen.add(w)
+                    candidates.append(w)
+        except Exception as e:
+            logger.warning("could not read whales for name resolution: %s", e)
+        for row in leaderboard_rows + activity_rows:
+            w = row["proxy_wallet"]
+            if w and w not in seen:
+                seen.add(w)
+                candidates.append(w)
+
+        for w in candidates[:resolve_names]:
+            try:
+                intel = ark.get_address_intelligence(w)
+            except CreditBudgetExhausted:
+                raise
+            except Exception:
+                continue
+            name = _resolve_entity_name(intel)
+            if name:
+                resolved_names[w] = name
+
+        # Stamp resolved names onto the owned rows.
+        for row in leaderboard_rows + activity_rows:
+            nm = resolved_names.get(row["proxy_wallet"])
+            if nm:
+                row["entity_name"] = nm
+
     return {
         "resolved_names": resolved_names,
         "leaderboard": leaderboard_rows,
         "activity": activity_rows,
-        "markets_scanned": market_cids,
+        "markets_scanned": [],
     }
 
 
@@ -277,8 +306,8 @@ def write_payload(client, payload: Dict[str, Any]) -> Dict[str, int]:
     return written
 
 
-def run(*, live: bool, top_markets: int, holders_per_market: int, leaderboard_limit: int,
-        activity_limit: int, activity_min_usd: int, period: str) -> Dict[str, Any]:
+def run(*, live: bool, leaderboard_limit: int, activity_limit: int,
+        activity_min_usd: int, period: str, resolve_names: int) -> Dict[str, Any]:
     api_key = os.getenv("ARKHAM_API_KEY", "").strip()
     if not api_key:
         logger.error("ARKHAM_API_KEY is not set.")
@@ -292,12 +321,11 @@ def run(*, live: bool, top_markets: int, holders_per_market: int, leaderboard_li
         try:
             payload = build_payload(
                 ark, sb,
-                top_markets=top_markets,
-                holders_per_market=holders_per_market,
                 leaderboard_limit=leaderboard_limit,
                 activity_limit=activity_limit,
                 activity_min_usd=activity_min_usd,
                 period=period,
+                resolve_names=resolve_names,
             )
         except CreditBudgetExhausted as e:
             logger.error("ABORTING: %s", e)
@@ -305,9 +333,8 @@ def run(*, live: bool, top_markets: int, holders_per_market: int, leaderboard_li
         credits_left = ark.last_credits_remaining
 
     logger.info(
-        "%s — markets_scanned=%d resolved_names=%d leaderboard=%d activity=%d credits_remaining=%s",
+        "%s — resolved_names=%d leaderboard=%d activity=%d credits_remaining=%s",
         "LIVE" if live else "DRY-RUN",
-        len(payload["markets_scanned"]),
         len(payload["resolved_names"]),
         len(payload["leaderboard"]),
         len(payload["activity"]),
@@ -333,24 +360,22 @@ def main() -> int:
     g = p.add_mutually_exclusive_group()
     g.add_argument("--live", action="store_true", help="Write to Supabase.")
     g.add_argument("--dry-run", action="store_true", help="No writes (default).")
-    p.add_argument("--top-markets", type=int, default=100, help="Top N markets by volume to harvest holders from (default 100).")
-    p.add_argument("--holders-per-market", type=int, default=50, help="Holders to pull per market (default 50, max 200).")
     p.add_argument("--leaderboard-limit", type=int, default=200, help="Leaderboard entries (default 200, max 200).")
     p.add_argument("--activity-limit", type=int, default=500, help="Activity rows (default 500, max 500).")
     p.add_argument("--activity-min-usd", type=int, default=10000, help="Min USD notional for the activity tape (default 10000).")
     p.add_argument("--period", type=str, default="1d", choices=["1d", "1w", "1m", "all"], help="Leaderboard period (default 1d).")
+    p.add_argument("--resolve-names", type=int, default=150, help="Max wallets to resolve to entity names via /intelligence/address (default 150; 0 disables).")
     args = p.parse_args()
 
     live = args.live and not args.dry_run
     try:
         result = run(
             live=live,
-            top_markets=args.top_markets,
-            holders_per_market=args.holders_per_market,
             leaderboard_limit=args.leaderboard_limit,
             activity_limit=args.activity_limit,
             activity_min_usd=args.activity_min_usd,
             period=args.period,
+            resolve_names=args.resolve_names,
         )
     except Exception as e:
         logger.error("Arkham Polymarket sync failed: %s", e)

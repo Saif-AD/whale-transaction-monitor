@@ -161,6 +161,16 @@ class ArkhamClient:
         resp = self._request("GET", f"/intelligence/entity/{slug}")
         return resp.json()
 
+    def get_address_intelligence(self, address: str) -> Dict[str, Any]:
+        """GET /intelligence/address/{address} (1 credit).
+
+        Returns Arkham intelligence for a single address (defaults to the
+        address's primary chain). Used to resolve Polymarket wallets to a
+        real entity/label name.
+        """
+        resp = self._request("GET", f"/intelligence/address/{address}")
+        return resp.json()
+
     def get_intel_usage(self) -> Dict[str, Any]:
         """Fetch credit/label usage for the current billing period.
 
@@ -281,7 +291,7 @@ class ArkhamClient:
             "offset": offset,
         }
         resp = self._request("GET", "/polymarket/leaderboard", params=params)
-        return self._as_rows(resp.json(), key="leaderboard")
+        return self._as_rows(resp.json(), key="entries")
 
     def get_polymarket_activity(
         self,
@@ -312,7 +322,7 @@ class ArkhamClient:
         if actions:
             params["actions"] = actions
         resp = self._request("GET", "/polymarket/activity", params=params)
-        return self._as_rows(resp.json(), key="activity")
+        return self._as_rows(resp.json(), key="events")
 
     @staticmethod
     def _as_rows(data: Any, *, key: str) -> List[Dict[str, Any]]:
@@ -324,7 +334,7 @@ class ArkhamClient:
         if isinstance(data, list):
             return data
         if isinstance(data, dict):
-            for candidate in (key, "data", "items", "results"):
+            for candidate in (key, "entries", "events", "holders", "data", "items", "results"):
                 val = data.get(candidate)
                 if isinstance(val, list):
                     return val

@@ -73,11 +73,11 @@ _INFRA = [
 # is skipped silently with a WARNING by the backfill loop. If > 30% of new
 # slugs 404 in a single run, the operator should investigate before a full
 # live backfill — see ACCEPTANCE criteria in handoff doc.
+# Pruned 2026-06-08 via `python -m arkham_backfill.verify_slugs`: removed
+# jito-foundation, solana-foundation, jupiter-aggregator, helium-foundation,
+# magic-eden (HTTP 404 — not queryable entities).
 _SOLANA_NATIVE = [
-    Entity("jito-foundation", "fund"),
     Entity("marinade-finance", "fund"),
-    Entity("solana-foundation", "fund"),
-    Entity("jupiter-aggregator", "fund"),
     Entity("drift-protocol", "fund"),
     Entity("kamino-finance", "fund"),
     Entity("marginfi", "fund"),
@@ -85,9 +85,7 @@ _SOLANA_NATIVE = [
     Entity("raydium", "fund"),
     Entity("orca", "fund"),
     Entity("meteora", "fund"),
-    Entity("helium-foundation", "fund"),
     Entity("pump-fun", "fund"),
-    Entity("magic-eden", "fund"),
     Entity("tensor", "fund"),
 ]
 
@@ -96,7 +94,7 @@ _SOLANA_NATIVE = [
 # ---------------------------------------------------------------------------
 _MORE_FUNDS = [
     Entity("multicoin-capital", "fund"),
-    Entity("paradigm", "fund"),
+    # "paradigm" pruned (HTTP 404); "paradigm-capital" above is the valid slug.
     Entity("electric-capital", "fund"),
     Entity("pantera-capital", "fund"),
     Entity("delphi-digital", "fund"),
@@ -133,38 +131,27 @@ _BRIDGES = [
 # at Arkham's directory; any 404 is skipped with a WARNING, and
 # `python -m arkham_backfill.verify_slugs --dry-run` prunes them before a
 # live run once ARKHAM_API_KEY is set.
+# Pruned 2026-06-08 via verify_slugs (HTTP 404): world-liberty-financial,
+# union-square-ventures, lightspeed-faction, government-of-el-salvador, us-doj,
+# us-government, german-government, wormhole-exploiter, changpeng-zhao,
+# charles-hoskinson, anthony-pompliano, sergey-nazarov, rune-christensen,
+# lyn-alden. (optimism-foundation/axelar/blackrock-bitcoin-etf removed earlier.)
 _CURATED_PAGE_TARGETS = [
     # Protocol treasuries / DAOs
     Entity("balancer", "protocol"),
-    # NOTE: "optimism-foundation" removed — not queryable on the transfers
-    # endpoint (HTTP 400). Re-add with a verified slug if needed.
     Entity("pancakeswap", "protocol"),
     Entity("sushiswap", "protocol"),
-    Entity("world-liberty-financial", "protocol"),
     Entity("chainlink", "protocol"),
     # ETF issuers / public-company treasuries
     Entity("21shares", "fund"),
     Entity("bitwise", "fund"),
     Entity("valkyrie", "fund"),
     Entity("tesla", "company"),
-    Entity("union-square-ventures", "fund"),
-    Entity("lightspeed-faction", "fund"),
-    # Government / law-enforcement / illicit (high-signal, Arkham-tracked)
-    Entity("government-of-el-salvador", "government"),
-    Entity("us-doj", "government"),
-    Entity("us-government", "government"),
-    Entity("german-government", "government"),
+    # Historical / illicit (high-signal, Arkham-tracked)
     Entity("lazarus-group", "historical"),
-    Entity("wormhole-exploiter", "historical"),
     # Individuals (MEDIUM signal via ENTITY_TYPE_OVERRIDES)
-    Entity("changpeng-zhao", "individual"),
-    Entity("charles-hoskinson", "individual"),
     Entity("gavin-wood", "individual"),
     Entity("raoul-pal", "individual"),
-    Entity("anthony-pompliano", "individual"),
-    Entity("sergey-nazarov", "individual"),
-    Entity("rune-christensen", "individual"),
-    Entity("lyn-alden", "individual"),
     Entity("logan-paul", "individual"),
 ]
 

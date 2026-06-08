@@ -18,17 +18,16 @@
 #   4. Set env vars: ARKHAM_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 #   5. Deploy. Trigger one manual run to verify writes + credit burn.
 #
-# Credit cost (Arkham): leaderboard 10 + top-holders 3/market + activity 5.
-# At --top-markets 100 that is ~10 + 300 + 5 + 10 ≈ 325 credits/run, ~7.8k/day.
-# Lower --top-markets or the schedule if you need to conserve credits.
+# Credit cost (Arkham): leaderboard 10 + activity 5 + up to --resolve-names
+# address lookups (1 credit each). At the defaults that is ~10 + 5 + 150 ≈ 165
+# credits/run, ~4k/day. Lower --resolve-names or the schedule to conserve.
 #
-# Schedule: hourly at :30 (offset from the public cron's */15 cadence so the
-# market list it reads is already fresh).
+# Schedule: hourly at :30.
 
 [build]
 builder = "RAILPACK"
 
 [deploy]
-startCommand = "python scripts/sync_arkham_polymarket.py --live --top-markets 100 --holders-per-market 50 --activity-min-usd 10000"
+startCommand = "python scripts/sync_arkham_polymarket.py --live --activity-min-usd 10000 --resolve-names 150"
 cronSchedule = "30 * * * *"
 restartPolicyType = "NEVER"
