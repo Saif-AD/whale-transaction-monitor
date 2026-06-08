@@ -18,6 +18,20 @@
 #   4. Set env vars: ARKHAM_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 #   5. Deploy. Trigger one manual run to verify writes + credit burn.
 #
+# Provisioning checklist (one-time, Railway dashboard) — do ALL of these or the
+# service silently does nothing / exits non-zero:
+#   1. Create a NEW service in the project, point it at this repo.
+#   2. Settings -> Source -> Config Path = railway.arkham_polymarket.toml
+#      (type the path manually if the dropdown is stale — this is the most
+#       common reason a "new service doesn't work": it runs the default
+#       railway.toml instead of this file.)
+#   3. Set env vars on THIS service (Variables tab):
+#        ARKHAM_API_KEY              (required — exits 2 without it)
+#        SUPABASE_URL
+#        SUPABASE_SERVICE_ROLE_KEY
+#   4. Deploy, then use "Run now" once to confirm it writes (check logs for
+#      "LIVE write complete — ... leaderboard=200 activity=...").
+#
 # Credit cost (Arkham): leaderboard 10 + activity 5 + up to --resolve-names
 # address lookups (1 credit each). At the defaults that is ~10 + 5 + 150 ≈ 165
 # credits/run, ~4k/day. Lower --resolve-names or the schedule to conserve.
