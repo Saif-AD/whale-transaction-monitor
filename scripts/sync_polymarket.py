@@ -218,7 +218,7 @@ def run(
     if payload["markets"]:
         top = sorted(payload["markets"], key=lambda r: r["whale_flow"], reverse=True)[:5]
         for m in top:
-            logger.info("  $%,.0f whale-flow  %s", m["whale_flow"], m["question"][:60])
+            logger.info("  $%s whale-flow  %s", f"{m['whale_flow']:,.0f}", m["question"][:60])
 
     if not live:
         return summary
@@ -228,18 +228,25 @@ def run(
         from config.api_keys import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
         client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
+    # Chunk every upsert. A single 30k+ row upsert (especially whales, which
+    # carry a positions JSON blob) blows past Supabase's statement timeout and
+    # returns 57014, which kills the whole run. Small batches keep each
+    # statement well under the limit.
+    def _chunked_upsert(table: str, rows: list, on_conflict: str, size: int = 500):
+        for i in range(0, len(rows), size):
+            client.table(table).upsert(
+                rows[i:i + size], on_conflict=on_conflict
+            ).execute()
+
     if payload["markets"]:
-        client.table("polymarket_markets").upsert(
-            payload["markets"], on_conflict="condition_id"
-        ).execute()
+        _chunked_upsert("polymarket_markets", payload["markets"], "condition_id")
     if payload["whales"]:
-        client.table("polymarket_whales").upsert(
-            payload["whales"], on_conflict="proxy_wallet"
-        ).execute()
+        _chunked_upsert("polymarket_whales", payload["whales"], "proxy_wallet")
     if payload["holders"]:
-        client.table("polymarket_market_holders").upsert(
-            payload["holders"], on_conflict="condition_id,proxy_wallet,outcome_index"
-        ).execute()
+        _chunked_upsert(
+            "polymarket_market_holders", payload["holders"],
+            "condition_id,proxy_wallet,outcome_index",
+        )
 
     # Prune stale rows the upserts left behind. Upsert never deletes, so
     # resolved markets, dropped longshots, and whales that fell out of the
