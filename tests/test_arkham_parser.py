@@ -59,7 +59,8 @@ class TestExtractAddresses:
     def test_extracts_to_side(self):
         client = ArkhamClient(api_key="test")
         transfers = [_make_transfer(
-            from_entity_id="unknown",
+            from_entity_id="",
+            from_label="",
             to_entity_id="binance",
             to_entity_name="Binance",
             to_entity_type="cex",
@@ -69,6 +70,7 @@ class TestExtractAddresses:
         assert len(result) == 1
         assert result[0]["address"] == "0xBBB"
         assert result[0]["label"] == "Cold Wallet"
+        assert result[0]["is_seed"] is True
 
     def test_extracts_both_sides(self):
         client = ArkhamClient(api_key="test")
@@ -102,9 +104,39 @@ class TestExtractAddresses:
         result = client.extract_addresses(transfers, "binance")
         assert len(result) == 2
 
-    def test_ignores_other_entities(self):
+    def test_captures_labeled_counterparty(self):
+        """A counterparty Arkham has labeled is captured, flagged non-seed."""
         client = ArkhamClient(api_key="test")
-        transfers = [_make_transfer(from_entity_id="coinbase")]
+        transfers = [_make_transfer(
+            from_entity_id="coinbase",
+            from_entity_name="Coinbase",
+            from_entity_type="cex",
+        )]
+        result = client.extract_addresses(transfers, "binance")
+        assert len(result) == 1
+        assert result[0]["address"] == "0xAAA"
+        assert result[0]["entity_slug"] == "coinbase"
+        assert result[0]["is_seed"] is False
+
+    def test_captures_label_only_counterparty(self):
+        """A counterparty with only a label name (no entity id) is captured."""
+        client = ArkhamClient(api_key="test")
+        transfers = [_make_transfer(
+            from_entity_id="",
+            from_label="MEV Bot",
+        )]
+        result = client.extract_addresses(transfers, "binance")
+        assert len(result) == 1
+        assert result[0]["label"] == "MEV Bot"
+        assert result[0]["is_seed"] is False
+
+    def test_ignores_unlabeled_counterparty(self):
+        """An unlabeled counterparty (no entity id, no label) is dropped."""
+        client = ArkhamClient(api_key="test")
+        transfers = [_make_transfer(
+            from_entity_id="",
+            from_label="",
+        )]
         result = client.extract_addresses(transfers, "binance")
         assert len(result) == 0
 
@@ -143,6 +175,7 @@ class TestExtractAddresses:
         assert result[0]["label"] == ""
 
     def test_multiple_entities_multiple_transfers(self):
+        """Seed wallets and labeled counterparties are both captured."""
         client = ArkhamClient(api_key="test")
         transfers = [
             _make_transfer(from_addr="0x1", from_entity_id="binance"),
@@ -150,6 +183,10 @@ class TestExtractAddresses:
             _make_transfer(from_addr="0x3", from_entity_id="coinbase"),
         ]
         result = client.extract_addresses(transfers, "binance")
-        assert len(result) == 2
+        assert len(result) == 3
         addrs = {r["address"] for r in result}
-        assert addrs == {"0x1", "0x2"}
+        assert addrs == {"0x1", "0x2", "0x3"}
+        by_addr = {r["address"]: r for r in result}
+        assert by_addr["0x1"]["is_seed"] is True
+        assert by_addr["0x3"]["is_seed"] is False
+        assert by_addr["0x3"]["entity_slug"] == "coinbase"

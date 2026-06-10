@@ -210,10 +210,19 @@ class ArkhamClient:
     def extract_addresses(
         self, transfers: List[Dict[str, Any]], entity_slug: str
     ) -> List[Dict[str, Any]]:
-        """Extract unique addresses attributed to an entity from transfer data.
+        """Extract unique labeled addresses from transfer data.
+
+        Captures both the queried entity's own wallets AND every counterparty
+        address that Arkham has independently labeled (i.e. has its own entity
+        id or label name). Counterparties cost no additional credits — their
+        labels are already present in the transfer payload we paid for — so
+        harvesting them is what turns a handful of own-wallets per entity into
+        the bulk of newly discovered addresses. Unlabeled counterparties
+        (random wallets, contracts, routers) are dropped to keep the table
+        high-signal.
 
         Returns a list of dicts with keys:
-          address, chain, entity_name, label, entity_type
+          address, chain, entity_name, label, entity_type, entity_slug, is_seed
         Deduplicates on (address, chain).
         """
         seen: set[tuple[str, str]] = set()
@@ -231,8 +240,14 @@ class ArkhamClient:
                     continue
 
                 entity = addr_obj.get("arkhamEntity") or {}
+                ark_label = addr_obj.get("arkhamLabel") or {}
                 entity_id = entity.get("id", "")
-                if entity_id != entity_slug:
+                label_name = ark_label.get("name", "")
+
+                is_seed = bool(entity_id) and entity_id == entity_slug
+                # Keep the seed entity's own wallets, plus any counterparty that
+                # Arkham has independently labeled (known entity or label name).
+                if not is_seed and not entity_id and not label_name:
                     continue
 
                 dedup_key = (raw_addr, chain)
@@ -240,13 +255,14 @@ class ArkhamClient:
                     continue
                 seen.add(dedup_key)
 
-                ark_label = addr_obj.get("arkhamLabel") or {}
                 results.append({
                     "address": raw_addr,
                     "chain": chain,
                     "entity_name": entity.get("name", ""),
                     "entity_type": entity.get("type", ""),
-                    "label": ark_label.get("name", ""),
+                    "label": label_name,
+                    "entity_slug": entity_id,
+                    "is_seed": is_seed,
                 })
 
         return results

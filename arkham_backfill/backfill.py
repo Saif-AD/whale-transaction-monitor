@@ -54,14 +54,21 @@ def build_upsert_row(
 ) -> Dict[str, Any]:
     """Build a row dict for upserting into the `addresses` table.
 
-    Applies ARKHAM_DEFAULTS, then ENTITY_TYPE_OVERRIDES based on
-    entity.type, then specific fields from the Arkham transfer data.
+    Applies ARKHAM_DEFAULTS, then ENTITY_TYPE_OVERRIDES, then specific fields
+    from the Arkham transfer data. For the seed entity's own wallets the
+    override is keyed on the seed entity.type; for discovered counterparties
+    it is keyed on the address's own Arkham entity type, so e.g. a wallet
+    found alongside `lazarus-group` is not mislabeled with its LOW-confidence
+    override.
 
     The address is normalized via shared.address_labels.normalize_address()
     to ensure EVM addresses are lowercased, matching the ingest pipeline.
     """
     defaults = dict(ARKHAM_DEFAULTS)
-    overrides = ENTITY_TYPE_OVERRIDES.get(entity.type, {})
+    if addr_info.get("is_seed", True):
+        overrides = ENTITY_TYPE_OVERRIDES.get(entity.type, {})
+    else:
+        overrides = ENTITY_TYPE_OVERRIDES.get(addr_info.get("entity_type", ""), {})
     defaults.update(overrides)
 
     normalized_addr = normalize_address(addr_info["address"], our_blockchain)
