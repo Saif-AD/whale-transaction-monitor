@@ -17,8 +17,9 @@
 # Depth knobs (tune in startCommand below):
 #   --batch-size N       entities per run (default 15; rotates hourly through
 #                        the full ~86-entity seed list)
-#   --transfer-limit N   transfers fetched per entity (set to 150 for depth;
-#                        each transfer carries labeled counterparties too)
+#   --transfer-limit N   transfers fetched per entity (60 = light refresh that
+#                        stays within the monthly credit budget at every-2h;
+#                        each transfer also carries labeled counterparties)
 #   --max-per-entity N   addresses appended per curated entity after bridge
 #
 # Credit safety: ArkhamClient aborts when credits drop below CREDIT_FLOOR
@@ -30,7 +31,7 @@
 builder = "RAILPACK"
 
 [deploy]
-startCommand = "python scripts/sync_arkham_cron.py --live --batch-size 15 --transfer-limit 150 --max-per-entity 25"
+startCommand = "python scripts/sync_arkham_cron.py --live --batch-size 15 --transfer-limit 60 --max-per-entity 25"
 # Cron: every 2 hours. The full ~86-entity seed list cycles in ~12 runs (~24h).
 # restartPolicyType=NEVER so each scheduled tick runs the script once and exits
 # (no restart loop between ticks).
